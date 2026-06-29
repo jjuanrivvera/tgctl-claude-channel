@@ -1,0 +1,27 @@
+# /etc/systemd/system/tgctl-claude.service
+# Persistent Claude Code session driven by the Telegram channel.
+# The channel binary is launched BY claude (as an MCP subprocess, per .mcp.json);
+# this unit supervises the long-running claude process and auto-restarts it.
+#
+# NOTE: channels are a Claude Code research preview. If claude needs a TTY in
+# this mode, run it under tmux instead (see DEPLOY.md) — same env, same command.
+
+[Unit]
+Description=Claude Code session driven by Telegram (tgctl-claude-channel)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory to the VPS account that owns the claude login.
+User=REPLACE_USER
+WorkingDirectory=/home/REPLACE_USER/Assistant
+EnvironmentFile=/etc/tgctl-claude/channel.env
+ExecStart=/usr/bin/env claude \
+  --dangerously-load-development-channels server:tgctl-claude-channel \
+  --dangerously-skip-permissions
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

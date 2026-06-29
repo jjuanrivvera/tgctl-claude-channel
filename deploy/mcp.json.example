@@ -1,0 +1,9 @@
+{
+  "//": "Place at the working dir of the claude session (e.g. ~/Assistant/.mcp.json).",
+  "//env": "The channel reads TGCTL_TOKEN / TGCTL_CHANNEL_* from the process env (set via the systemd EnvironmentFile), so no secrets live here.",
+  "mcpServers": {
+    "tgctl-claude-channel": {
+      "command": "/usr/local/bin/tgctl-claude-channel"
+    }
+  }
+}
