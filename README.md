@@ -48,16 +48,37 @@ make build    # -> bin/tgctl-claude-channel
 
 ## Wire into Claude Code
 
-While channels are a research preview, load it directly via a project `.mcp.json` + the development flag:
+Channels are a research preview. Two ways to load it:
+
+**As a plugin (production — no per-launch prompt, systemd-friendly).** This repo is also a
+single-plugin marketplace; the bundled `.mcp.json` pulls the config from the *process
+environment* via `${VAR}` (so no secrets live in the repo — set them with a systemd
+`EnvironmentFile`). Inside a Claude Code session:
+
+```
+/plugin marketplace add jjuanrivvera/tgctl-claude-channel
+/plugin install tgctl-claude-channel@jjuanrivvera
+```
+
+Then run the channel session (needs `tgctl-claude-channel` + `tgctl` on `PATH`):
+
+```sh
+claude --channels plugin:tgctl-claude-channel@jjuanrivvera --dangerously-skip-permissions
+```
+
+**As a dev channel (quick, unpackaged):**
 
 ```jsonc
 // .mcp.json
-{ "mcpServers": { "tgctl-channel": { "command": "/path/to/bin/tgctl-claude-channel" } } }
+{ "mcpServers": { "tgctl-claude-channel": { "command": "/path/to/bin/tgctl-claude-channel" } } }
 ```
 
 ```sh
-claude --dangerously-load-development-channels server:tgctl-channel
+claude --dangerously-load-development-channels server:tgctl-claude-channel
 ```
+
+> The dev flag asks for confirmation on **every** launch, so it can't auto-restart cleanly
+> under systemd — use the **plugin** path for an always-on deployment.
 
 ## Security model
 

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "tgctl-claude-channel": {
+      "command": "tgctl-claude-channel",
+      "env": {
+        "TGCTL_TOKEN": "${TGCTL_TOKEN}",
+        "TGCTL_CHANNEL_ALLOW": "${TGCTL_CHANNEL_ALLOW}",
+        "TGCTL_CHANNEL_PORT": "${TGCTL_CHANNEL_PORT}",
+        "TGCTL_CHANNEL_SECRET": "${TGCTL_CHANNEL_SECRET}",
+        "TGCTL_CHANNEL_SET_URL": "${TGCTL_CHANNEL_SET_URL}",
+        "TGCTL_BIN": "${TGCTL_BIN}"
+      }
+    }
+  }
+}

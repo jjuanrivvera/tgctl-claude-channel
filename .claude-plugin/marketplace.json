@@ -1,0 +1,19 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "jjuanrivvera",
+  "description": "Juan Rivera's Claude Code plugins.",
+  "owner": {
+    "name": "Juan Felipe Rivera"
+  },
+  "plugins": [
+    {
+      "name": "tgctl-claude-channel",
+      "description": "Telegram channel for Claude Code — drive a persistent session from Telegram, over the tgctl CLI.",
+      "author": {
+        "name": "Juan Felipe Rivera"
+      },
+      "category": "messaging",
+      "source": "."
+    }
+  ]
+}
