@@ -3,3 +3,4 @@
 *.err
 bin/
 cover.out
+/tgctl-claude-channel
