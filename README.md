@@ -1,4 +1,18 @@
-# tgctl-claude-channel
+<div align="center">
+
+# 📨 tgctl-claude-channel
+
+**Drive a Claude Code agent from Telegram** — text, polls, buttons, media, and tool approvals, right on your phone.
+
+[![CI](https://github.com/jjuanrivvera/tgctl-claude-channel/actions/workflows/ci.yml/badge.svg)](https://github.com/jjuanrivvera/tgctl-claude-channel/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jjuanrivvera/tgctl-claude-channel?sort=semver&color=blue)](https://github.com/jjuanrivvera/tgctl-claude-channel/releases)
+[![Go Report Card](https://goreportcard.com/badge/github.com/jjuanrivvera/tgctl-claude-channel)](https://goreportcard.com/report/github.com/jjuanrivvera/tgctl-claude-channel)
+[![Go](https://img.shields.io/github/go-mod/go-version/jjuanrivvera/tgctl-claude-channel)](go.mod)
+![Coverage](https://img.shields.io/badge/coverage-83%25-brightgreen)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Claude Code](https://img.shields.io/badge/Claude%20Code-channel-8A63D2)](https://docs.claude.com/en/docs/claude-code)
+
+</div>
 
 A [Claude Code **channel**](https://docs.claude.com/en/docs/claude-code) that bridges a Telegram bot to a Claude Code session — drive a persistent agent from your phone, with a full interactive toolbox and permission approvals on the device.
 
