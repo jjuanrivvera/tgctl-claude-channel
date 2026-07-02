@@ -1,0 +1,7 @@
+version: "2"
+# The v2 default set (errcheck, govet, ineffassign, staticcheck, unused) plus a couple
+# of low-noise extras. Keeps the bar high without style bikeshedding.
+linters:
+  enable:
+    - misspell
+    - unconvert

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Pre-commit gate: formatted, vets, and tests pass before anything lands.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+if out="$(gofmt -l .)"; [ -n "$out" ]; then
+  echo "pre-commit: gofmt needed on:" >&2
+  echo "$out" >&2
+  exit 1
+fi
+go vet ./...
+go test ./...

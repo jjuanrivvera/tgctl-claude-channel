@@ -1,73 +1,63 @@
-// Command tgctl-claude-channel is a Claude Code "channel": an MCP stdio server
-// that bridges a Telegram bot to a Claude Code session. Inbound Telegram
-// messages become `notifications/claude/channel` turns; the assistant replies
-// through MCP tools. All Telegram I/O goes through the `tgctl` CLI, so this
-// process owns no Bot-API logic and no secrets — tgctl holds the token.
+// Command tgctl-claude-channel is a Claude Code "channel": an MCP stdio server that
+// bridges a Telegram bot to a Claude Code session. Inbound Telegram messages become
+// notifications/claude/channel turns; the assistant replies through MCP tools. Every
+// Telegram operation goes through the `tgctl` CLI, so this process reimplements no
+// Bot-API logic — tgctl's 100+ verbs are the whole surface, for free.
 package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
-var version = "0.2.0"
+var version = "0.3.0"
 
-// Config is the channel's runtime configuration, entirely from the environment
-// so the channel stays a thin transport over tgctl.
+// Config is the channel's runtime configuration, entirely from the environment so the
+// channel stays a thin transport over tgctl.
 type Config struct {
-	TgctlBin string         // path to the tgctl binary
-	BotToken string         // passed to tgctl as TGCTL_TOKEN; never logged
-	Allow    map[int64]bool // allowlisted Telegram sender user_ids — the security gate
-	Port     string         // (legacy, webhook mode) local port tgctl's webhook receiver listens on
-	Secret   string         // (legacy, webhook mode) X-Telegram-Bot-Api-Secret-Token tgctl enforces
-	SetURL   string         // (legacy, webhook mode) optional public HTTPS URL to register the webhook at
-
-	// OffsetFile persists the getUpdates cursor so restarts neither replay old
-	// messages nor miss new ones. The live transport is long-poll, not webhook.
-	OffsetFile string
-
-	// AckReaction is set on an inbound message the moment it's accepted, so the
-	// sender sees an immediate "seen" cue before the reply. Empty disables it.
-	AckReaction string
+	TgctlBin   string   // path to the tgctl binary
+	BotToken   string   // passed to tgctl as TGCTL_TOKEN; never logged
+	AllowSeed  []string // user_ids to seed access.json's allowlist on first run
+	StateDir   string   // access.json, inbox/, bot.pid, poll cursor live here
+	OffsetFile string   // getUpdates cursor
 }
 
 func loadConfig() Config {
+	stateDir := envOr("TGCTL_CHANNEL_STATE_DIR", defaultStateDir())
 	return Config{
-		TgctlBin:    envOr("TGCTL_BIN", "tgctl"),
-		BotToken:    os.Getenv("TGCTL_TOKEN"),
-		Port:        envOr("TGCTL_CHANNEL_PORT", "8080"),
-		Secret:      os.Getenv("TGCTL_CHANNEL_SECRET"),
-		SetURL:      os.Getenv("TGCTL_CHANNEL_SET_URL"),
-		Allow:       parseAllow(os.Getenv("TGCTL_CHANNEL_ALLOW")),
-		OffsetFile:  envOr("TGCTL_CHANNEL_OFFSET_FILE", defaultOffsetFile()),
-		AckReaction: envOr("TGCTL_CHANNEL_ACK_REACTION", "👀"),
+		TgctlBin:   envOr("TGCTL_BIN", "tgctl"),
+		BotToken:   os.Getenv("TGCTL_TOKEN"),
+		AllowSeed:  parseAllowList(os.Getenv("TGCTL_CHANNEL_ALLOW")),
+		StateDir:   stateDir,
+		OffsetFile: envOr("TGCTL_CHANNEL_OFFSET_FILE", filepath.Join(stateDir, "poll-offset")),
 	}
 }
 
-// defaultOffsetFile keeps the getUpdates cursor next to the channel's other config.
-func defaultOffsetFile() string {
+func defaultStateDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return ""
+		return ".tgctl-claude"
 	}
-	return home + "/.config/tgctl-claude/poll-offset"
+	return filepath.Join(home, ".config", "tgctl-claude")
 }
 
-func parseAllow(s string) map[int64]bool {
-	m := map[int64]bool{}
+func parseAllowList(s string) []string {
+	var out []string
 	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p == "" {
-			continue
-		}
-		if id, err := strconv.ParseInt(p, 10, 64); err == nil {
-			m[id] = true
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
 		}
 	}
-	return m
+	return out
 }
 
 func envOr(k, def string) string {
@@ -77,15 +67,15 @@ func envOr(k, def string) string {
 	return def
 }
 
-// transport is the outbound side: every Telegram write goes through tgctl, so
-// the channel reuses tgctl's auth and never calls the Bot API itself.
+// --- transport: every Telegram write goes through tgctl -------------------------------
+
 type transport interface {
 	send(chatID, text string) (string, error)
 	react(chatID, messageID, emoji string) (string, error)
 	edit(chatID, messageID, text string) (string, error)
 	action(chatID, action string) (string, error)
-	// cmd runs an arbitrary tgctl invocation — the escape hatch that lets the
-	// channel expose the full Telegram toolbox (polls, media, keyboards, …).
+	// cmd runs an arbitrary tgctl invocation — the escape hatch that exposes the
+	// full Telegram toolbox (polls, media, keyboards, file download, …).
 	cmd(args ...string) (string, error)
 }
 
@@ -111,8 +101,6 @@ func (t tgctlTransport) send(chatID, text string) (string, error) {
 	return t.run("message", "send", "--chat", chatID, "--text", text)
 }
 
-// react/edit use tgctl's generic `api` escape hatch so we don't depend on
-// specific subcommand flag shapes that may evolve.
 func (t tgctlTransport) react(chatID, messageID, emoji string) (string, error) {
 	data := `{"chat_id":` + chatID + `,"message_id":` + messageID +
 		`,"reaction":[{"type":"emoji","emoji":` + strconv.Quote(emoji) + `}]}`
@@ -120,13 +108,10 @@ func (t tgctlTransport) react(chatID, messageID, emoji string) (string, error) {
 }
 
 func (t tgctlTransport) edit(chatID, messageID, text string) (string, error) {
-	data := `{"chat_id":` + chatID + `,"message_id":` + messageID +
-		`,"text":` + strconv.Quote(text) + `}`
+	data := `{"chat_id":` + chatID + `,"message_id":` + messageID + `,"text":` + strconv.Quote(text) + `}`
 	return t.run("api", "editMessageText", "--data", data)
 }
 
-// action shows a Telegram chat action (typing, upload_photo, …) — the "…is typing"
-// hint. Uses the generic api escape hatch to avoid coupling to subcommand flags.
 func (t tgctlTransport) action(chatID, action string) (string, error) {
 	data := `{"chat_id":` + chatID + `,"action":` + strconv.Quote(action) + `}`
 	return t.run("api", "sendChatAction", "--data", data)
@@ -145,6 +130,8 @@ func (e *toolError) Error() string {
 	return "tgctl " + e.op + ": " + e.err.Error()
 }
 
+// --- lifecycle ------------------------------------------------------------------------
+
 func main() {
 	log.SetPrefix("tgctl-claude-channel: ")
 	log.SetFlags(0)
@@ -153,28 +140,110 @@ func main() {
 	if cfg.BotToken == "" {
 		log.Fatal("TGCTL_TOKEN is required (the bot token tgctl uses)")
 	}
-	// Fail closed: an ungated channel would let anyone who finds the bot drive
-	// the agent. Require an explicit sender allowlist.
-	if len(cfg.Allow) == 0 {
-		log.Fatal("TGCTL_CHANNEL_ALLOW is required (comma-separated allowlisted user_ids); refusing to run an open channel")
-	}
+	writePID(cfg.StateDir)
 
 	tg := tgctlTransport{bin: cfg.TgctlBin, token: cfg.BotToken}
+	ackVal, ackSet := os.LookupEnv("TGCTL_CHANNEL_ACK_REACTION")
 	srv := &server{
-		out:    newOut(os.Stdout),
-		tg:     tg,
-		typing: newTypingManager(tg),
+		out:     newOut(os.Stdout),
+		tg:      tg,
+		typing:  newTypingManager(tg),
+		store:   newAccessStore(cfg.StateDir, cfg.AllowSeed, ackVal, ackSet),
+		perms:   newPermissionManager(),
+		cfg:     cfg,
+		botUser: fetchBotUsername(tg),
 	}
+	srv.store.ensureSeed() // materialize access.json so the operator can edit it
 
-	// Inbound pump (Telegram → session) runs alongside the stdio request loop.
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	installShutdown(cfg, cancel)
+	go watchdog(cfg, cancel)
+
 	go func() {
-		if err := srv.runInbound(ctx, cfg); err != nil {
+		if err := srv.runInbound(ctx); err != nil && ctx.Err() == nil {
 			log.Printf("inbound stopped: %v", err)
 		}
 	}()
 
-	// Request loop: read JSON-RPC from Claude Code (stdin), dispatch.
+	// Blocks until Claude Code closes the MCP pipe (stdin EOF). Then clean up so we
+	// don't leave a poller holding the bot token (a 409 for the next session).
 	srv.serve(os.Stdin)
+	shutdown(cfg, cancel)
+}
+
+// writePID records our PID and replaces a stale poller from a crashed session — only
+// one getUpdates consumer per token is allowed, else every new session sees 409.
+func writePID(stateDir string) {
+	_ = os.MkdirAll(stateDir, 0o700)
+	pidFile := filepath.Join(stateDir, "bot.pid")
+	if b, err := os.ReadFile(pidFile); err == nil {
+		if stale, e := strconv.Atoi(strings.TrimSpace(string(b))); e == nil && stale > 1 && stale != os.Getpid() {
+			if proc, e := os.FindProcess(stale); e == nil && proc.Signal(syscall.Signal(0)) == nil {
+				log.Printf("replacing stale poller pid=%d", stale)
+				_ = proc.Signal(syscall.SIGTERM)
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+	}
+	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600)
+}
+
+func installShutdown(cfg Config, cancel context.CancelFunc) {
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	go func() {
+		<-sig
+		shutdown(cfg, cancel)
+	}()
+}
+
+// watchdog self-terminates if we're orphaned (parent chain severed by a crash), so a
+// dead session never leaves us polling forever.
+func watchdog(cfg Config, cancel context.CancelFunc) {
+	boot := os.Getppid()
+	t := time.NewTicker(5 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		if os.Getppid() != boot {
+			shutdown(cfg, cancel)
+			return
+		}
+	}
+}
+
+var shutdownOnce = make(chan struct{}, 1)
+
+func shutdown(cfg Config, cancel context.CancelFunc) {
+	select {
+	case shutdownOnce <- struct{}{}:
+	default:
+		return // already shutting down
+	}
+	cancel() // cancels the poll context → kills the in-flight tgctl subprocess
+	pidFile := filepath.Join(cfg.StateDir, "bot.pid")
+	if b, err := os.ReadFile(pidFile); err == nil {
+		if p, e := strconv.Atoi(strings.TrimSpace(string(b))); e == nil && p == os.Getpid() {
+			_ = os.Remove(pidFile)
+		}
+	}
+	// Give the cancelled subprocess a moment to die, then exit.
+	go func() { time.Sleep(time.Second); os.Exit(0) }()
+	os.Exit(0)
+}
+
+// fetchBotUsername resolves the bot's @username (needed for group mention detection).
+// Best-effort — an empty result just means group-mention matching falls back to
+// text_mention / reply-to-bot / configured patterns.
+func fetchBotUsername(tg transport) string {
+	out, err := tg.cmd("bot", "info", "-o", "json")
+	if err != nil {
+		return ""
+	}
+	var me struct {
+		Username string `json:"username"`
+	}
+	if json.Unmarshal([]byte(out), &me) != nil {
+		return ""
+	}
+	return me.Username
 }

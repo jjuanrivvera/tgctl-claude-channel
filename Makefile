@@ -1,6 +1,7 @@
-BINARY := tgctl-claude-channel
+BINARY    := tgctl-claude-channel
+COVER_MIN ?= 80
 
-.PHONY: build vet test fmt tidy verify clean
+.PHONY: build vet lint test cover fmt fmtcheck tidy verify hooks clean
 
 build:
 	go build -o bin/$(BINARY) .
@@ -8,18 +9,30 @@ build:
 vet:
 	go vet ./...
 
+lint:
+	golangci-lint run
+
 test:
-	go test ./...
+	go test -race ./...
+
+cover:
+	./scripts/cover-check.sh $(COVER_MIN)
 
 fmt:
-	gofmt -l -w .
+	gofmt -w .
+
+fmtcheck:
+	@out=$$(gofmt -l .); [ -z "$$out" ] || { echo "gofmt needed:"; echo "$$out"; exit 1; }
 
 tidy:
 	go mod tidy
 
-# Acceptance gate: compiles, passes vet, and all tests are green.
-verify: build vet test
+# Acceptance gate: formatted, vets, lints, tests pass, coverage floor held.
+verify: fmtcheck vet lint cover
 	@echo "verify: OK"
 
+hooks:
+	./scripts/install-hooks.sh
+
 clean:
-	rm -rf bin
+	rm -rf bin cover.out

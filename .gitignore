@@ -1,3 +1,5 @@
 /bin/
 *.out
 *.err
+bin/
+cover.out

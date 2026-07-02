@@ -55,9 +55,11 @@ Or by hand:
 tmux new -s claude-tg
 set -a; source ~/.config/tgctl-claude/channel.env; set +a   # export is required
 cd ~/Assistant
-claude --dangerously-load-development-channels server:tgctl-claude-channel --dangerously-skip-permissions
+claude --dangerously-load-development-channels server:tgctl-claude-channel
 #   → answer the "development channels" warning with option 1 (proceed)
 #   → the flag takes the entry DIRECTLY; no separate --channels, no --mcp-config
+#   → --dangerously-skip-permissions is OPTIONAL: the channel relays tool-approval
+#     prompts to Telegram (Allow/Deny buttons), so you can leave the sandbox ON.
 ```
 
 Reboot-survival: a `systemd` oneshot (`Type=oneshot`, `RemainAfterExit=yes`,

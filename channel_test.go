@@ -3,133 +3,237 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
-// fakeTransport records outbound calls so tool dispatch is testable without tgctl.
+// --- test doubles ---------------------------------------------------------------------
+
+// fakeTransport records every tgctl invocation so tool dispatch and inbound handling
+// are testable without spawning tgctl.
 type fakeTransport struct {
-	calls    int
-	lastArgs []string
+	mu    sync.Mutex
+	calls [][]string
 }
 
-func (f *fakeTransport) send(_, _ string) (string, error)     { return "ok", nil }
-func (f *fakeTransport) react(_, _, _ string) (string, error) { return "ok", nil }
-func (f *fakeTransport) edit(_, _, _ string) (string, error)  { return "ok", nil }
-func (f *fakeTransport) action(_, _ string) (string, error)   { return "ok", nil }
+func (f *fakeTransport) record(args ...string) {
+	f.mu.Lock()
+	f.calls = append(f.calls, append([]string(nil), args...))
+	f.mu.Unlock()
+}
+func (f *fakeTransport) send(chatID, text string) (string, error) {
+	f.record("send", chatID, text)
+	return "ok", nil
+}
+func (f *fakeTransport) react(c, m, e string) (string, error) {
+	f.record("react", c, m, e)
+	return "ok", nil
+}
+func (f *fakeTransport) edit(c, m, t string) (string, error) {
+	f.record("edit", c, m, t)
+	return "ok", nil
+}
+func (f *fakeTransport) action(c, a string) (string, error) {
+	f.record("action", c, a)
+	return "ok", nil
+}
 func (f *fakeTransport) cmd(args ...string) (string, error) {
-	f.calls++
-	f.lastArgs = args
-	return "ok message_id=42", nil
+	f.record(args...)
+	return "ok message_id=1", nil
+}
+func (f *fakeTransport) count() int { f.mu.Lock(); defer f.mu.Unlock(); return len(f.calls) }
+func (f *fakeTransport) all() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var b strings.Builder
+	for _, c := range f.calls {
+		b.WriteString(strings.Join(c, " ") + "\n")
+	}
+	return b.String()
 }
 
-func TestBuildNotification_GatesOnSender(t *testing.T) {
-	allow := map[int64]bool{456: true}
-
-	got := buildNotification(update{Message: &tgMessage{
-		MessageID: 7, Text: "hola",
-		Chat: tgChat{ID: 123}, From: tgUser{ID: 456, Username: "juan"},
-	}}, allow)
-	if got == nil {
-		t.Fatal("allowlisted sender should produce a notification")
+func newTestServer(t *testing.T, allow ...string) (*server, *fakeTransport, *bytes.Buffer) {
+	t.Helper()
+	dir := t.TempDir()
+	ft := &fakeTransport{}
+	buf := &bytes.Buffer{}
+	s := &server{
+		out:    newOut(buf),
+		tg:     ft,
+		typing: newTypingManager(ft),
+		store:  newAccessStore(dir, allow, "", false),
+		perms:  newPermissionManager(),
+		cfg:    Config{TgctlBin: "tgctl", StateDir: dir},
 	}
-	m := got.(map[string]any)
-	if m["method"] != "notifications/claude/channel" {
-		t.Errorf("method = %v, want notifications/claude/channel", m["method"])
-	}
-	params := m["params"].(map[string]any)
-	if params["content"] != "hola" {
-		t.Errorf("content = %v, want hola", params["content"])
-	}
-	meta := params["meta"].(map[string]string)
-	if meta["chat_id"] != "123" || meta["user_id"] != "456" || meta["message_id"] != "7" {
-		t.Errorf("meta = %v", meta)
-	}
-
-	// Gate + dropping rules.
-	if buildNotification(update{Message: &tgMessage{Text: "hi", From: tgUser{ID: 999}}}, allow) != nil {
-		t.Error("non-allowlisted sender must be dropped")
-	}
-	if buildNotification(update{Message: &tgMessage{From: tgUser{ID: 456}}}, allow) != nil {
-		t.Error("empty text must be dropped")
-	}
-	if buildNotification(update{}, allow) != nil {
-		t.Error("update without message must be dropped")
-	}
+	return s, ft, buf
 }
 
-func TestPump_StreamGatesAndEmits(t *testing.T) {
-	// Two updates back-to-back, as tgctl emits them on its JSON stream.
-	stream := `
-{"update_id":1,"message":{"message_id":1,"text":"yes","chat":{"id":10},"from":{"id":456,"username":"juan"}}}
-{"update_id":2,"message":{"message_id":2,"text":"no","chat":{"id":10},"from":{"id":999}}}
-`
-	var emitted []any
-	pump(strings.NewReader(stream), map[int64]bool{456: true}, func(v any) { emitted = append(emitted, v) })
-	if len(emitted) != 1 {
-		t.Fatalf("expected 1 emission (only allowlisted sender), got %d", len(emitted))
-	}
+func call(t *testing.T, s *server, name string, args map[string]any) (string, error) {
+	t.Helper()
+	b, _ := json.Marshal(args)
+	return s.callTool(name, b)
 }
 
-func TestInitialize_AdvertisesChannelCapability(t *testing.T) {
+// waitForCalls polls until the fake transport has seen at least n invocations, for
+// tests that fan out through goroutines.
+func waitForCalls(t *testing.T, ft *fakeTransport, n int) {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		if ft.count() >= n {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("expected >=%d tgctl calls, got %d", n, ft.count())
+}
+
+// --- initialize + tools ---------------------------------------------------------------
+
+func TestInitialize_AdvertisesBothCapabilities(t *testing.T) {
 	res := initializeResult(json.RawMessage(`{"protocolVersion":"2025-03-26"}`))
 	if res["protocolVersion"] != "2025-03-26" {
 		t.Errorf("should echo client protocolVersion, got %v", res["protocolVersion"])
 	}
-	caps := res["capabilities"].(map[string]any)
-	exp := caps["experimental"].(map[string]any)
+	exp := res["capabilities"].(map[string]any)["experimental"].(map[string]any)
 	if _, ok := exp[channelCapability]; !ok {
-		t.Errorf("must advertise experimental[%q], got %v", channelCapability, exp)
+		t.Errorf("must advertise %q", channelCapability)
+	}
+	if _, ok := exp[permissionCapability]; !ok {
+		t.Errorf("must advertise %q (drops --dangerously-skip-permissions)", permissionCapability)
 	}
 }
 
-func TestToolsList_HasReplyReactEdit(t *testing.T) {
-	names := map[string]bool{}
+func TestToolsList_HasFullToolbox(t *testing.T) {
+	got := map[string]bool{}
 	for _, td := range toolDefs() {
-		names[td["name"].(string)] = true
+		got[td["name"].(string)] = true
 	}
-	for _, want := range []string{"reply", "react", "edit"} {
-		if !names[want] {
+	for _, want := range []string{"reply", "react", "edit", "poll", "photo", "document", "dice", "pin", "unpin", "answer_callback", "download_attachment"} {
+		if !got[want] {
 			t.Errorf("missing tool %q", want)
 		}
 	}
 }
 
-func TestDispatch_ToolCallReply_InvokesTransport(t *testing.T) {
-	ft := &fakeTransport{}
-	var buf bytes.Buffer
-	srv := &server{out: newOut(&buf), tg: ft}
+// --- callTool + outbound gate ---------------------------------------------------------
 
-	srv.dispatch(inMsg{
-		Method: "tools/call",
-		ID:     json.RawMessage(`1`),
-		Params: json.RawMessage(`{"name":"reply","arguments":{"chat_id":"123","text":"hello"}}`),
-	})
-
-	// reply → api sendMessage with the chat_id + text carried in the JSON body.
-	if ft.calls != 1 {
-		t.Fatalf("transport.cmd not invoked once: calls=%d", ft.calls)
+func TestReply_AllowedChat_CallsSendMessage(t *testing.T) {
+	s, ft, _ := newTestServer(t, "123")
+	if _, err := call(t, s, "reply", map[string]any{"chat_id": "123", "text": "hello"}); err != nil {
+		t.Fatalf("reply: %v", err)
 	}
-	joined := strings.Join(ft.lastArgs, " ")
-	if !strings.Contains(joined, "sendMessage") || !strings.Contains(joined, "123") || !strings.Contains(joined, "hello") {
-		t.Fatalf("reply should call `api sendMessage` with chat+text; got %v", ft.lastArgs)
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
-		t.Fatalf("bad response json: %v", err)
-	}
-	res := resp["result"].(map[string]any)
-	if _, isErr := res["isError"]; isErr {
-		t.Errorf("reply should not be an error: %v", res)
+	got := ft.all()
+	if !strings.Contains(got, "sendMessage") || !strings.Contains(got, "hello") || !strings.Contains(got, "123") {
+		t.Fatalf("reply should call api sendMessage with chat+text; got %q", got)
 	}
 }
 
-func TestParseAllow(t *testing.T) {
-	got := parseAllow(" 111, 222 ,, 333 ")
-	if len(got) != 3 || !got[111] || !got[222] || !got[333] {
-		t.Errorf("parseAllow = %v", got)
+func TestReply_DeniedChat_IsError(t *testing.T) {
+	s, ft, _ := newTestServer(t, "123")
+	_, err := call(t, s, "reply", map[string]any{"chat_id": "999", "text": "leak"})
+	if err == nil {
+		t.Fatal("reply to a non-allowlisted chat must be rejected")
 	}
-	if len(parseAllow("")) != 0 {
-		t.Error("empty allowlist should parse to empty map")
+	if ft.count() != 0 {
+		t.Fatalf("nothing should be sent to a denied chat; got %q", ft.all())
 	}
+}
+
+func TestReply_LongText_Chunks(t *testing.T) {
+	s, ft, _ := newTestServer(t, "1")
+	long := strings.Repeat("x", 5000) // > 4096
+	if _, err := call(t, s, "reply", map[string]any{"chat_id": "1", "text": long}); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	sends := strings.Count(ft.all(), "sendMessage")
+	if sends < 2 {
+		t.Fatalf("5000-char reply should split into >=2 messages, got %d", sends)
+	}
+}
+
+func TestReply_WithButtons_EmitsInlineKeyboard(t *testing.T) {
+	s, ft, _ := newTestServer(t, "1")
+	_, err := call(t, s, "reply", map[string]any{
+		"chat_id": "1", "text": "pick",
+		"buttons": []any{[]any{map[string]any{"text": "A", "callback_data": "a"}}},
+	})
+	if err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	if !strings.Contains(ft.all(), "inline_keyboard") {
+		t.Fatalf("buttons should produce a reply_markup; got %q", ft.all())
+	}
+}
+
+func TestPoll_Dice_AnswerCallback_Download(t *testing.T) {
+	s, ft, _ := newTestServer(t, "1")
+	mustCall(t, s, "poll", map[string]any{"chat_id": "1", "question": "q", "options": []string{"a", "b"}})
+	mustCall(t, s, "dice", map[string]any{"chat_id": "1"})
+	mustCall(t, s, "answer_callback", map[string]any{"callback_query_id": "cb1", "text": "ok"})
+	mustCall(t, s, "download_attachment", map[string]any{"file_id": "F1"})
+	got := ft.all()
+	for _, want := range []string{"sendPoll", "sendDice", "answerCallbackQuery", "file download"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("expected %q in calls; got %q", want, got)
+		}
+	}
+}
+
+func TestUnknownTool_Errors(t *testing.T) {
+	s, _, _ := newTestServer(t, "1")
+	if _, err := call(t, s, "nope", nil); err == nil {
+		t.Fatal("unknown tool must error")
+	}
+}
+
+func mustCall(t *testing.T, s *server, name string, args map[string]any) {
+	t.Helper()
+	if _, err := call(t, s, name, args); err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
+}
+
+// --- pure helpers ---------------------------------------------------------------------
+
+func TestInlineKeyboard(t *testing.T) {
+	if inlineKeyboard(nil) != nil || inlineKeyboard(json.RawMessage(`null`)) != nil || inlineKeyboard(json.RawMessage(`[]`)) != nil {
+		t.Error("empty/null/[] buttons should yield nil")
+	}
+	kb := inlineKeyboard(json.RawMessage(`[[{"text":"A","callback_data":"a"}]]`))
+	if kb == nil || kb["inline_keyboard"] == nil {
+		t.Error("valid buttons should produce inline_keyboard")
+	}
+}
+
+func TestAsInt(t *testing.T) {
+	if n, ok := asInt(" 42 "); !ok || n != 42 {
+		t.Errorf("asInt(42)=%d,%v", n, ok)
+	}
+	if _, ok := asInt("x"); ok {
+		t.Error("asInt(x) should fail")
+	}
+}
+
+func TestIsImageFile(t *testing.T) {
+	if !isImageFile("/a/b.PNG") || !isImageFile("x.jpeg") {
+		t.Error("image exts should match (case-insensitive)")
+	}
+	if isImageFile("/a/b.pdf") {
+		t.Error("non-image should not match")
+	}
+}
+
+func TestBufferReceivesJSON(t *testing.T) {
+	// sanity: out.send writes newline-delimited JSON
+	buf := &bytes.Buffer{}
+	o := newOut(buf)
+	o.send(map[string]any{"jsonrpc": "2.0"})
+	var v map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &v); err != nil {
+		t.Fatalf("not valid json: %v", err)
+	}
+	_ = io.Discard
 }
