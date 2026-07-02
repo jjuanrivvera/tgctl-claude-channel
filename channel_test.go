@@ -9,17 +9,19 @@ import (
 
 // fakeTransport records outbound calls so tool dispatch is testable without tgctl.
 type fakeTransport struct {
-	calls              int
-	sendChat, sendText string
+	calls    int
+	lastArgs []string
 }
 
-func (f *fakeTransport) send(chatID, text string) (string, error) {
-	f.calls++
-	f.sendChat, f.sendText = chatID, text
-	return "ok message_id=42", nil
-}
+func (f *fakeTransport) send(_, _ string) (string, error)     { return "ok", nil }
 func (f *fakeTransport) react(_, _, _ string) (string, error) { return "ok", nil }
 func (f *fakeTransport) edit(_, _, _ string) (string, error)  { return "ok", nil }
+func (f *fakeTransport) action(_, _ string) (string, error)   { return "ok", nil }
+func (f *fakeTransport) cmd(args ...string) (string, error) {
+	f.calls++
+	f.lastArgs = args
+	return "ok message_id=42", nil
+}
 
 func TestBuildNotification_GatesOnSender(t *testing.T) {
 	allow := map[int64]bool{456: true}
@@ -104,8 +106,13 @@ func TestDispatch_ToolCallReply_InvokesTransport(t *testing.T) {
 		Params: json.RawMessage(`{"name":"reply","arguments":{"chat_id":"123","text":"hello"}}`),
 	})
 
-	if ft.calls != 1 || ft.sendChat != "123" || ft.sendText != "hello" {
-		t.Fatalf("transport.send not invoked correctly: calls=%d chat=%q text=%q", ft.calls, ft.sendChat, ft.sendText)
+	// reply → api sendMessage with the chat_id + text carried in the JSON body.
+	if ft.calls != 1 {
+		t.Fatalf("transport.cmd not invoked once: calls=%d", ft.calls)
+	}
+	joined := strings.Join(ft.lastArgs, " ")
+	if !strings.Contains(joined, "sendMessage") || !strings.Contains(joined, "123") || !strings.Contains(joined, "hello") {
+		t.Fatalf("reply should call `api sendMessage` with chat+text; got %v", ft.lastArgs)
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &resp); err != nil {
