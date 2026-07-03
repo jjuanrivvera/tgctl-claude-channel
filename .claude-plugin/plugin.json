@@ -1,7 +1,7 @@
 {
   "name": "tgctl-claude-channel",
-  "description": "Telegram channel for Claude Code over the tgctl CLI — drive a persistent Claude Code session from Telegram, with sender-allowlist gating and webhook secret-token security.",
-  "version": "0.3.0",
+  "description": "Telegram channel for Claude Code over the tgctl CLI — drive a persistent Claude Code session from Telegram, with sender-allowlist gating, a permission relay, and long-poll transport (no public endpoint).",
+  "version": "0.4.0",
   "keywords": [
     "telegram",
     "messaging",

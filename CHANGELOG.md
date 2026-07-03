@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] — 2026-07-03
 
 ### Added
 - **Command handlers** (`TGCTL_CHANNEL_COMMAND_HANDLER`): route recognized bot commands to a local executable instead of relaying them as a turn. The handler declares its commands (`list`) and performs them (`run`); the channel registers them in Telegram's command menu and relays their output. Operator-only. A generic extension point — the flagship use is driving the host Claude Code REPL to run **built-in slash commands** (`/model`, `/clear`, `/compact`, `/doctor`, …), which channel input otherwise cannot reach.
@@ -42,6 +42,7 @@ Feature parity with the official Telegram channel, keeping the richer outbound t
 
 Initial release: a Claude Code channel bridging a Telegram bot to a session over the `tgctl` CLI, with a sender allowlist, `reply`/`react`/`edit` tools, an MCP + agent surface, and a VPS deploy kit.
 
+[0.4.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.2.0
 [0.1.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.1.0

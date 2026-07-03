@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-var version = "0.3.0"
+var version = "0.4.0"
 
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
