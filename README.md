@@ -70,6 +70,7 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_CHANNEL_ALLOW` | no | Comma-separated Telegram `user_id`s to seed the allowlist on first run. |
 | `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox and the poll cursor live (default `~/.config/tgctl-claude`). |
 | `TGCTL_CHANNEL_ACK_REACTION` | no | Emoji reaction set on receipt (default `👀`; set empty to disable). |
+| `TGCTL_CHANNEL_COMMAND_HANDLER` | no | Executable that handles bot commands locally instead of relaying them (see [Command handlers](#command-handlers)). |
 | `TGCTL_BIN` | no | Path to the `tgctl` binary (default `tgctl`). |
 
 ## Tools exposed to the assistant
@@ -93,6 +94,38 @@ Inbound messages are gated on the **sender's `user_id`** — everything else is 
 - **Groups**: opt in per group, with an optional per-group allowlist and mention requirement (the bot answers only when addressed).
 
 State lives in `access.json` under the state dir. Outbound tools are gated too — the assistant can only send to chats it may receive from.
+
+## Command handlers
+
+Point `TGCTL_CHANNEL_COMMAND_HANDLER` at an executable and the channel will route recognized
+bot commands to it — running a local action and relaying its output — instead of delivering
+them into the session as a turn. The handler owns both the command set and the behaviour, so
+the channel stays generic. The contract is two subcommands:
+
+```sh
+handler list                # -> JSON: [{"command":"deploy","description":"ship main"}, …]
+handler run <cmd> <args>    # performs the command; stdout is relayed to the chat
+```
+
+At startup the channel calls `list`, registers those commands in Telegram's command menu (so
+they autocomplete), and from then on a matching `/cmd` runs `handler run cmd "<rest>"`. Message
+metadata is passed in the environment (`TG_CHAT_ID`, `TG_USER_ID`, `TG_MESSAGE_ID`, `TG_COMMAND`,
+`TG_ARGS`, `TG_TEXT`), so a handler can also talk to Telegram directly via `tgctl` for rich
+replies (buttons, media, monospace) and emit no stdout. Handler commands are **operator-only** —
+they run for allowlisted senders and are dropped for everyone else.
+
+A minimal handler:
+
+```sh
+#!/bin/sh
+case "$1" in
+  list) echo '[{"command":"uptime","description":"host uptime"}]' ;;
+  run)  [ "$2" = "uptime" ] && uptime ;;
+esac
+```
+
+This is the extension point for privileged, deployment-specific commands (for example, driving
+the host Claude Code REPL to run built-in slash commands) without that logic living in the channel.
 
 ## Why route through `tgctl`?
 

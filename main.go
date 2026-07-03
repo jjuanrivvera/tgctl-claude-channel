@@ -24,21 +24,23 @@ var version = "0.3.0"
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
 type Config struct {
-	TgctlBin   string   // path to the tgctl binary
-	BotToken   string   // passed to tgctl as TGCTL_TOKEN; never logged
-	AllowSeed  []string // user_ids to seed access.json's allowlist on first run
-	StateDir   string   // access.json, inbox/, bot.pid, poll cursor live here
-	OffsetFile string   // getUpdates cursor
+	TgctlBin       string   // path to the tgctl binary
+	BotToken       string   // passed to tgctl as TGCTL_TOKEN; never logged
+	AllowSeed      []string // user_ids to seed access.json's allowlist on first run
+	StateDir       string   // access.json, inbox/, bot.pid, poll cursor live here
+	OffsetFile     string   // getUpdates cursor
+	CommandHandler string   // optional executable that handles recognized bot commands
 }
 
 func loadConfig() Config {
 	stateDir := envOr("TGCTL_CHANNEL_STATE_DIR", defaultStateDir())
 	return Config{
-		TgctlBin:   envOr("TGCTL_BIN", "tgctl"),
-		BotToken:   os.Getenv("TGCTL_TOKEN"),
-		AllowSeed:  parseAllowList(os.Getenv("TGCTL_CHANNEL_ALLOW")),
-		StateDir:   stateDir,
-		OffsetFile: envOr("TGCTL_CHANNEL_OFFSET_FILE", filepath.Join(stateDir, "poll-offset")),
+		TgctlBin:       envOr("TGCTL_BIN", "tgctl"),
+		BotToken:       os.Getenv("TGCTL_TOKEN"),
+		AllowSeed:      parseAllowList(os.Getenv("TGCTL_CHANNEL_ALLOW")),
+		StateDir:       stateDir,
+		OffsetFile:     envOr("TGCTL_CHANNEL_OFFSET_FILE", filepath.Join(stateDir, "poll-offset")),
+		CommandHandler: os.Getenv("TGCTL_CHANNEL_COMMAND_HANDLER"),
 	}
 }
 
@@ -152,8 +154,12 @@ func main() {
 		perms:   newPermissionManager(),
 		cfg:     cfg,
 		botUser: fetchBotUsername(tg),
+		cmdHook: loadCommandHook(cfg.CommandHandler),
 	}
 	srv.store.ensureSeed() // materialize access.json so the operator can edit it
+	if srv.cmdHook != nil {
+		go srv.cmdHook.registerCommands(tg) // publish the Telegram command menu
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	installShutdown(cfg, cancel)

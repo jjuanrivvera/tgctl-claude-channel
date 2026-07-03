@@ -61,6 +61,7 @@ type server struct {
 	perms   *permissionManager
 	cfg     Config
 	botUser string
+	cmdHook *commandHook
 }
 
 func (s *server) serve(r io.Reader) {

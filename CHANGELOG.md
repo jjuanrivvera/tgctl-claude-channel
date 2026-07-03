@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Command handlers** (`TGCTL_CHANNEL_COMMAND_HANDLER`): route recognized bot commands to a local executable instead of relaying them as a turn. The handler declares its commands (`list`) and performs them (`run`); the channel registers them in Telegram's command menu and relays their output. Operator-only. A generic extension point — the flagship use is driving the host Claude Code REPL to run **built-in slash commands** (`/model`, `/clear`, `/compact`, `/doctor`, …), which channel input otherwise cannot reach.
+
 ## [0.3.0] — 2026-07-02
 
 Feature parity with the official Telegram channel, keeping the richer outbound toolbox and the `tgctl`-as-transport design.

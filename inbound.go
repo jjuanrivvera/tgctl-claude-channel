@@ -143,8 +143,16 @@ func (s *server) handleMessage(m *message) {
 	chatID := strconv.FormatInt(m.Chat.ID, 10)
 	text := m.textOrCaption()
 
-	// Bot commands (/start, /help, /status) are handled here and never relayed.
+	// Bot commands are handled here and never relayed as a turn. A configured command
+	// handler claims its own commands (operator-only — these can drive the host session);
+	// everything else falls through to the built-in pairing commands.
 	if isCommand(text) {
+		if s.cmdHook.handles(commandName(text)) {
+			if containsStr(s.store.read().AllowFrom, senderID) {
+				s.cmdHook.run(s, m, chatID, commandName(text), commandArgs(text))
+			}
+			return
+		}
 		s.handleCommand(m, chatType, senderID, chatID)
 		return
 	}
