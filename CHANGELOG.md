@@ -4,6 +4,11 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-07-03
+
+### Added
+- **Interactive command handlers via callback routing.** A handler can now own inline-button taps: a callback whose `callback_data` is namespaced `hnd:` routes to the handler's `callback` subcommand (operator-only) instead of the model, so a handler can present native Telegram keyboards and act on the choice. The bundled use is a native `/model` and `/effort` picker — tap a button and the arg form runs directly, no TUI navigation.
+
 ## [0.4.0] — 2026-07-03
 
 ### Added
@@ -42,6 +47,7 @@ Feature parity with the official Telegram channel, keeping the richer outbound t
 
 Initial release: a Claude Code channel bridging a Telegram bot to a session over the `tgctl` CLI, with a sender allowlist, `reply`/`react`/`edit` tools, an MCP + agent surface, and a VPS deploy kit.
 
+[0.5.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.5.0
 [0.4.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.4.0
 [0.3.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.3.0
 [0.2.0]: https://github.com/jjuanrivvera/tgctl-claude-channel/releases/tag/v0.2.0

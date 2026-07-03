@@ -101,6 +101,45 @@ func (h *commandHook) run(s *server, m *message, chatID, name, args string) {
 	}
 }
 
+// handlerCallbackPrefix namespaces inline-button taps a handler owns. A tap with this prefix
+// is routed to the handler (which drives the host session) instead of the model, so a handler
+// can offer interactive keyboards — e.g. a native model/effort picker — and act on the choice.
+const handlerCallbackPrefix = "hnd:"
+
+// ownsCallback reports whether a button tap belongs to the handler. Nil-safe.
+func (h *commandHook) ownsCallback(data string) bool {
+	return h != nil && strings.HasPrefix(data, handlerCallbackPrefix)
+}
+
+// callback invokes `<handler> callback <data>` on a button tap the handler owns. The handler
+// answers the callback and updates its message via tgctl itself; on failure we answer here so
+// Telegram's button spinner stops. Message coordinates and the callback id ride the env.
+func (h *commandHook) callback(s *server, cq *callbackQuery) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
+	defer cancel()
+	c := exec.CommandContext(ctx, h.bin, "callback", cq.Data)
+	var chatID, msgID string
+	if cq.Message != nil {
+		chatID = strconv.FormatInt(cq.Message.Chat.ID, 10)
+		msgID = strconv.FormatInt(cq.Message.MessageID, 10)
+	}
+	c.Env = append(os.Environ(),
+		"TG_CHAT_ID="+chatID,
+		"TG_MESSAGE_ID="+msgID,
+		"TG_CALLBACK_ID="+cq.ID,
+		"TG_USER_ID="+strconv.FormatInt(cq.From.ID, 10),
+		"TG_DATA="+cq.Data,
+	)
+	out, err := c.Output()
+	if err != nil {
+		_, _ = s.tg.cmd("callback", "answer", "--callback-query-id", cq.ID, "--text", "failed")
+		return
+	}
+	if reply := strings.TrimSpace(string(out)); reply != "" {
+		_, _ = s.reply(chatID, reply, "", "", nil, nil)
+	}
+}
+
 // registerCommands publishes the bot's command menu — the handler's commands plus the
 // built-in pairing commands — so Telegram shows autocomplete. Best-effort.
 func (h *commandHook) registerCommands(tg transport) {

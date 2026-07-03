@@ -206,6 +206,15 @@ func (s *server) handleCallback(cq *callbackQuery) {
 		return
 	}
 	senderID := strconv.FormatInt(cq.From.ID, 10)
+	// Handler-owned button taps drive the host session (operator-only), not the model.
+	if s.cmdHook.ownsCallback(cq.Data) {
+		if containsStr(s.store.read().AllowFrom, senderID) {
+			s.cmdHook.callback(s, cq)
+		} else {
+			_, _ = s.tg.cmd("callback", "answer", "--callback-query-id", cq.ID, "--text", "Not authorized.")
+		}
+		return
+	}
 	acc := s.store.read()
 	if !containsStr(acc.AllowFrom, senderID) {
 		if cq.Message == nil {

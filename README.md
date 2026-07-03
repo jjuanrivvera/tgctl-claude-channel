@@ -124,8 +124,14 @@ case "$1" in
 esac
 ```
 
+A handler can also own **inline-button taps**: send a keyboard whose `callback_data` starts with
+`hnd:` and the tap routes to `handler callback <data>` (operator-only, with `TG_CALLBACK_ID` and
+the message coordinates in the environment) instead of the model — enough to build interactive
+pickers that answer the callback and edit their own message.
+
 This is the extension point for privileged, deployment-specific commands (for example, driving
-the host Claude Code REPL to run built-in slash commands) without that logic living in the channel.
+the host Claude Code REPL to run built-in slash commands, or a native model/effort picker)
+without that logic living in the channel.
 
 ## Why route through `tgctl`?
 
