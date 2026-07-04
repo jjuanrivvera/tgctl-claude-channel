@@ -37,9 +37,26 @@ manifest() {
   {"command":"clear","description":"Clear the conversation context"},
   {"command":"doctor","description":"Run Claude Code diagnostics"},
   {"command":"mcp","description":"MCP server status"},
-  {"command":"goal","description":"Start a /goal loop (e.g. /goal fix the failing test)"}
+  {"command":"goal","description":"Start a /goal loop (e.g. /goal fix the failing test)"},
+  {"command":"sh","description":"Run a shell command on the host (operator only)"}
 ]
 JSON
+}
+
+# run_shell is a deterministic operator remote-shell: it runs exactly what the operator typed
+# and returns stdout/stderr. The model is NOT in this path (the channel routes /sh straight
+# here, operator-gated), so it's the "!" bash mode of Claude Code over Telegram — same trust
+# model as SSH. Every invocation is audited; a timeout guards against hangs.
+run_shell() {
+  local cmd="$1"
+  [ -z "$cmd" ] && { send_pre "usage: /sh <command>"; return; }
+  local log="${TG_SH_AUDIT_LOG:-$HOME/logs/tg-sh-audit.log}"
+  mkdir -p "$(dirname "$log")" 2>/dev/null || true
+  printf '%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "${TG_USER_ID:-?}" "$cmd" >> "$log" 2>/dev/null || true
+  local runner="bash -lc"
+  command -v timeout >/dev/null 2>&1 && runner="timeout 60 bash -lc"
+  local out; out="$($runner "$cmd" 2>&1)" || true   # a failing command must not abort the handler
+  send_pre "$(printf '$ %s\n\n%s' "$cmd" "${out:-(no output)}")"
 }
 
 # --- Telegram helpers (env-passed to python so heredocs don't fight for stdin) ---------------
@@ -140,6 +157,7 @@ exec_and_mirror() {
 run() {
   local cmd="$1"; shift
   local args="${*:-}"
+  if [ "$cmd" = "sh" ]; then run_shell "$args"; return; fi
   if [ -z "$args" ]; then
     case "$cmd" in
       model)  send_model_keyboard;  return ;;
