@@ -18,23 +18,25 @@ A [Claude Code **channel**](https://docs.claude.com/en/docs/claude-code) that br
 
 It's a small **MCP stdio server**: when you message the bot, it forwards the message to your Claude Code session; the assistant replies, reacts, sends polls, buttons, media, and asks for tool permissions — all through Telegram. Every Telegram operation goes through the [`tgctl`](https://github.com/jjuanrivvera/tgctl) CLI, so this process reimplements no Bot-API logic and never holds the token itself.
 
+```mermaid
+flowchart LR
+    U["📱 You — Telegram"] <--> TG["Telegram Bot API"]
+    TG <-->|"long-poll / send"| TGCTL["tgctl CLI<br/>owns token · 109 verbs"]
+    TGCTL <--> CH
+    subgraph CH["tgctl-claude-channel — MCP stdio server"]
+        direction TB
+        GATE["access gate<br/>pairing · allowlist · groups"]
+        IO["inbound turns +<br/>outbound toolbox"]
+        PERM["permission relay<br/>Allow / Deny"]
+    end
+    CH <-->|MCP| CC["Claude Code session"]
+    HANDLER["command handler<br/>(claude-slash)"] -. "run / callback" .-> CH
+    HOOKS["hooks — live-activity"] -. "PostToolUse / Stop" .-> CC
 ```
-        Telegram · your bot
-             │ ▲
-   inbound   │ │  outbound (reply/poll/photo/react/…)
-  (long-poll)│ │  + permission prompts
-             ▼ │
-┌──────────────────────────────────────────────┐
-│  tgctl-claude-channel  (MCP stdio server)      │
-│   • gate on sender (pairing / allowlist)       │
-│   • inbound  → notifications/claude/channel     │─┐  every call
-│   • tools    → tgctl (message/media/api)        │ │  runs through
-│   • permission relay → Allow/Deny on Telegram   │─┘  the tgctl CLI
-└──────────────────────────────────────────────┘
-             │
-             ▼
-        Claude Code session
-```
+
+> Every Telegram operation goes through `tgctl` (which owns the token), so the channel holds no
+> credential and reimplements no Bot-API logic. See **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**
+> for the inbound/outbound, interactive-picker, and live-activity flows.
 
 ## Features
 
