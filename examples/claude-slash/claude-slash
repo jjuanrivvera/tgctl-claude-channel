@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# claude-slash — external command handler for tgctl-claude-channel.
+#
+# Maps Telegram bot commands to Claude Code BUILT-IN slash commands by driving the host
+# Claude Code REPL (which runs inside tmux) via `tmux send-keys`, then relays the result
+# back to Telegram. Built-ins (/model, /clear, /compact, /doctor, …) are client-side harness
+# operations — the model can't trigger them and channel input never reaches the slash parser —
+# so the only way to execute them is to type into the real REPL. That coupling to a specific
+# tmux deployment is exactly why this lives OUTSIDE the generic plugin.
+#
+# Interactive commands (/model, /effort) present NATIVE Telegram inline keyboards: a tap comes
+# back as a `hnd:`-namespaced callback, which the channel routes to `callback` below, which runs
+# the arg form (`/model opus`, `/effort high` — both set directly, no TUI navigation needed).
+#
+# Contract (tgctl-claude-channel's command-handler feature):
+#   claude-slash list              -> JSON manifest on stdout
+#   claude-slash run <cmd> <args>  -> executes; talks to Telegram via tgctl (no stdout)
+#   claude-slash callback <data>   -> handles a button tap (data like hnd:model:opus)
+#
+# Environment (inherited from the channel process):
+#   TG_CHAT_ID, TG_MESSAGE_ID, TG_CALLBACK_ID, TG_DATA   per-message/tap metadata
+#   TGCTL_TOKEN, TGCTL_BIN                                for tgctl
+#   TGCTL_CHANNEL_TMUX_TARGET                             REPL pane (default: claude-tg)
+set -euo pipefail
+
+TARGET="${TGCTL_CHANNEL_TMUX_TARGET:-claude-tg}"
+TGCTL="${TGCTL_BIN:-tgctl}"
+
+manifest() {
+  cat <<'JSON'
+[
+  {"command":"model","description":"Switch model (tap to pick)"},
+  {"command":"effort","description":"Set reasoning effort (tap to pick)"},
+  {"command":"status","description":"Session status"},
+  {"command":"cost","description":"Token usage & cost this session"},
+  {"command":"compact","description":"Compact the conversation context"},
+  {"command":"clear","description":"Clear the conversation context"},
+  {"command":"doctor","description":"Run Claude Code diagnostics"},
+  {"command":"mcp","description":"MCP server status"},
+  {"command":"goal","description":"Start a /goal loop (e.g. /goal fix the failing test)"}
+]
+JSON
+}
+
+# --- Telegram helpers (env-passed to python so heredocs don't fight for stdin) ---------------
+
+# send a monospace <pre> block (alignment matters for TUI output)
+send_pre() {
+  TG_BODY="$1" python3 - "$TGCTL" <<'PY'
+import json, os, subprocess, sys
+b = os.environ["TG_BODY"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")[-3500:]
+data = json.dumps({"chat_id": int(os.environ["TG_CHAT_ID"]), "text": "<pre>" + b + "</pre>", "parse_mode": "HTML"})
+subprocess.run([sys.argv[1], "api", "sendMessage", "--data", data], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+PY
+}
+
+# send an inline keyboard. $1 = prompt text, $2 = JSON rows (array of arrays of [text,data])
+send_keyboard() {
+  TG_TEXT="$1" TG_ROWS="$2" python3 - "$TGCTL" <<'PY'
+import json, os, subprocess, sys
+rows = [[{"text": t, "callback_data": d} for t, d in row] for row in json.loads(os.environ["TG_ROWS"])]
+data = json.dumps({"chat_id": int(os.environ["TG_CHAT_ID"]), "text": os.environ["TG_TEXT"],
+                   "reply_markup": {"inline_keyboard": rows}})
+subprocess.run([sys.argv[1], "api", "sendMessage", "--data", data], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+PY
+}
+
+# answer the tapped callback (stop the spinner) and replace the keyboard message with a result
+answer_edit() {
+  TG_CONFIRM="$1" python3 - "$TGCTL" <<'PY'
+import json, os, subprocess, sys
+tgctl, msg = sys.argv[1], os.environ["TG_CONFIRM"]
+def call(method, payload): subprocess.run([tgctl, "api", method, "--data", json.dumps(payload)],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+call("answerCallbackQuery", {"callback_query_id": os.environ["TG_CALLBACK_ID"], "text": msg})
+if os.environ.get("TG_MESSAGE_ID"):
+    call("editMessageText", {"chat_id": int(os.environ["TG_CHAT_ID"]),
+                             "message_id": int(os.environ["TG_MESSAGE_ID"]), "text": msg})
+PY
+}
+
+send_model_keyboard() {
+  send_keyboard "Pick a model:" '[[["Opus 4.8","hnd:model:opus"],["Sonnet 5","hnd:model:sonnet"]],[["Haiku 4.5","hnd:model:haiku"],["Fable 5","hnd:model:fable"]]]'
+}
+send_effort_keyboard() {
+  send_keyboard "Set reasoning effort:" '[[["low","hnd:effort:low"],["medium","hnd:effort:medium"],["high","hnd:effort:high"]],[["xhigh","hnd:effort:xhigh"],["max","hnd:effort:max"],["ultracode","hnd:effort:ultracode"]]]'
+}
+
+model_display() {
+  case "$1" in
+    opus) echo "Opus 4.8" ;; sonnet) echo "Sonnet 5" ;;
+    haiku) echo "Haiku 4.5" ;; fable) echo "Fable 5" ;; *) echo "$1" ;;
+  esac
+}
+
+# --- REPL mirroring (for non-interactive commands) -------------------------------------------
+
+repl_line() { case "$1" in model|goal) [ -n "$2" ] && printf '/%s %s' "$1" "$2" || printf '/%s' "$1" ;; *) printf '/%s' "$1" ;; esac; }
+
+wait_stable() {
+  local prev="" cur="" i
+  for i in $(seq 1 30); do
+    cur="$(tmux capture-pane -p -S -160 -t "$TARGET" 2>/dev/null || true)"
+    if [ -n "$cur" ] && [ "$cur" = "$prev" ]; then printf '%s' "$cur"; return; fi
+    prev="$cur"; sleep 0.4
+  done
+  printf '%s' "$cur"
+}
+
+extract_clean() {
+  PANE_RAW="$1" python3 - <<'PY'
+import os, re
+lines = os.environ["PANE_RAW"].splitlines()
+rule = max((i for i, l in enumerate(lines) if '▔▔▔' in l), default=-1)
+end  = next((i for i, l in enumerate(lines) if 'Esc to cancel' in l), len(lines))
+body = lines[rule+1:end] if (rule >= 0 and end > rule) else lines[-25:]
+box = set('│╭╮╰╯─┃┏┓┗┛┈▁▏▎▔▕░')
+out = []
+for l in body:
+    l = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', l)
+    l = re.sub(r'\[[0-9;]+m', '', l)
+    out.append(''.join(c for c in l if c not in box).rstrip())
+print(re.sub(r'\n{3,}', '\n\n', '\n'.join(out)).strip())
+PY
+}
+
+exec_and_mirror() {
+  local cmd="$1" args="$2"
+  tmux send-keys -t "$TARGET" "$(repl_line "$cmd" "$args")" Enter
+  sleep 1
+  local pane; pane="$(wait_stable)"
+  tmux send-keys -t "$TARGET" Escape 2>/dev/null || true
+  local overlay; overlay="$(extract_clean "$pane")"
+  [ -z "$(printf '%s' "$overlay" | tr -d '[:space:]')" ] && overlay="$(printf '%s' "$pane" | tail -n 20)"
+  send_pre "$(printf '/%s\n\n%s' "$cmd" "$overlay")"
+}
+
+# --- dispatch --------------------------------------------------------------------------------
+
+run() {
+  local cmd="$1"; shift
+  local args="${*:-}"
+  if [ -z "$args" ]; then
+    case "$cmd" in
+      model)  send_model_keyboard;  return ;;
+      effort) send_effort_keyboard; return ;;
+    esac
+  fi
+  exec_and_mirror "$cmd" "$args"
+}
+
+callback() {
+  local data="${1:-${TG_DATA:-}}"
+  local rest="${data#hnd:}" kind val
+  kind="${rest%%:*}"; val="${rest##*:}"
+  if [ -z "$kind" ] || [ -z "$val" ] || [ "$kind" = "$val" ]; then
+    answer_edit "⚠️ bad selection"; return
+  fi
+  tmux send-keys -t "$TARGET" "/$kind $val" Enter
+  sleep 1
+  case "$kind" in
+    model)  answer_edit "✅ Model → $(model_display "$val")" ;;
+    effort) answer_edit "✅ Effort → $val" ;;
+    *)      answer_edit "✅ $kind → $val" ;;
+  esac
+}
+
+case "${1:-}" in
+  list)     manifest ;;
+  run)      shift; run "$@" ;;
+  callback) shift; callback "$@" ;;
+  *)        echo "usage: claude-slash {list|run <cmd> [args]|callback <data>}" >&2; exit 2 ;;
+esac

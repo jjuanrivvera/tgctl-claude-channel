@@ -133,6 +133,11 @@ This is the extension point for privileged, deployment-specific commands (for ex
 the host Claude Code REPL to run built-in slash commands, or a native model/effort picker)
 without that logic living in the channel.
 
+> **Worked example:** [`examples/claude-slash`](examples/claude-slash) runs Claude Code's
+> built-in slash commands (`/model`, `/effort`, `/clear`, `/doctor`, …) from Telegram, with
+> native inline-keyboard pickers — something the official integration can't do, since it only
+> talks to the model and never the client harness.
+
 ## Why route through `tgctl`?
 
 The bot's entire capability set — polls, dice, inline keyboards, media, file download, reactions, pins, callback answers — is just [`tgctl`](https://github.com/jjuanrivvera/tgctl) commands. This channel builds the request and shells out; `tgctl` owns the Bot-API surface, the credential (OS keyring) and the retries. So the channel is a thin, single static Go binary (no runtime to install), the full Telegram toolbox comes essentially for free, and any verb `tgctl` gains is instantly available here.
