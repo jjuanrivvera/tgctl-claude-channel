@@ -1,0 +1,232 @@
+#!/usr/bin/env python3
+"""activity — a live "what is Claude doing" feed for tgctl-claude-channel.
+
+Wired to Claude Code hooks, it keeps ONE self-editing Telegram message showing a rolling trail
+of the last few tool calls (never a message per step), with a [detalle] button that expands the
+content (diffs, command output, grep hits, subagent summaries) on demand.
+
+Modes:
+  activity tool       # PostToolUse hook: stdin = {tool_name, tool_input, tool_response}
+  activity stop       # Stop hook: finalize the status message for this turn
+  activity callback <data>   # hnd:activity:expand | hnd:activity:collapse (from the button)
+
+Design contract with the host session: this is a HOOK, so it MUST never disrupt the turn —
+it prints nothing to stdout and always exits 0, even on error. All output goes to Telegram
+via tgctl. Deployment-specific glue → lives outside the generic channel, like claude-slash.
+
+Env (inherited from the session): TGCTL_TOKEN, TGCTL_BIN, TGCTL_CHANNEL_STATE_DIR,
+and TG_ACTIVITY_CHAT (the chat to post the feed to; falls back to access.json's allowlist).
+"""
+import json, os, subprocess, sys, time
+
+STATE_ROOT = os.environ.get("TGCTL_CHANNEL_STATE_DIR", os.path.expanduser("~/.config/tgctl-claude"))
+STATE = os.path.join(STATE_ROOT, "activity")
+TGCTL = os.environ.get("TGCTL_BIN", "tgctl")
+TRAIL_MAX = 6          # rolling window in the live view
+THROTTLE = 3.0         # min seconds between live edits (Telegram rate-limits edits)
+DETAIL_CAP = 1500      # chars per detail block
+CONTENT_TOOLS = {"Edit", "MultiEdit", "Write", "Bash", "Grep", "Task", "WebFetch", "WebSearch"}
+
+
+# ---- state helpers ----
+def _p(n): return os.path.join(STATE, n)
+def _read(n, d=""):
+    try:
+        with open(_p(n)) as f: return f.read()
+    except OSError: return d
+def _write(n, v):
+    with open(_p(n), "w") as f: f.write(str(v))
+def _trail():
+    out = []
+    for line in _read("trail.jsonl").splitlines():
+        try: out.append(json.loads(line))
+        except ValueError: pass
+    return out
+
+
+def chat_id():
+    c = os.environ.get("TG_ACTIVITY_CHAT")
+    if c: return c
+    try:
+        acc = json.load(open(os.path.join(STATE_ROOT, "access.json")))
+        allow = acc.get("allowFrom") or acc.get("AllowFrom") or []
+        if allow: return str(allow[0])
+    except Exception: pass
+    return ""
+
+
+def esc(s):
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# ---- tgctl ----
+def _api(method, payload):
+    subprocess.run([TGCTL, "api", method, "--data", json.dumps(payload)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+
+def send(text, buttons):
+    payload = {"chat_id": int(chat_id()), "text": text, "parse_mode": "HTML",
+               "reply_markup": {"inline_keyboard": buttons}}
+    r = subprocess.run([TGCTL, "api", "sendMessage", "--data", json.dumps(payload), "-o", "json"],
+                       capture_output=True, text=True, timeout=15)
+    try: return str(json.loads(r.stdout).get("message_id", ""))
+    except Exception: return ""
+
+def edit(msg_id, text, buttons):
+    payload = {"chat_id": int(chat_id()), "message_id": int(msg_id), "text": text, "parse_mode": "HTML"}
+    if buttons is not None:
+        payload["reply_markup"] = {"inline_keyboard": buttons}
+    _api("editMessageText", payload)
+
+def answer(cb_id):
+    if cb_id: _api("answerCallbackQuery", {"callback_query_id": cb_id})
+
+
+# ---- renderers: (compact_line, detail_block_or_None) per tool ----
+def _base(path): return os.path.basename(path) if path else "?"
+def _clip(s, n=DETAIL_CAP):
+    s = s or ""
+    return s if len(s) <= n else s[:n] + f"\n…(+{len(s)-n} chars)"
+def _resp_text(resp):
+    if isinstance(resp, str): return resp
+    if isinstance(resp, dict):
+        for k in ("stdout", "output", "content", "result", "stderr"):
+            v = resp.get(k)
+            if isinstance(v, str) and v.strip(): return v
+        return json.dumps(resp)[:DETAIL_CAP]
+    return ""
+
+def render(tool, inp, resp):
+    inp = inp or {}
+    if tool in ("Edit", "MultiEdit"):
+        f = _base(inp.get("file_path", ""))
+        edits = inp.get("edits") or [{"old_string": inp.get("old_string", ""), "new_string": inp.get("new_string", "")}]
+        add = sum((e.get("new_string", "").count("\n") + 1) for e in edits)
+        rem = sum((e.get("old_string", "").count("\n") + 1) for e in edits)
+        diff = []
+        for e in edits:
+            for ln in e.get("old_string", "").splitlines(): diff.append("- " + ln)
+            for ln in e.get("new_string", "").splitlines(): diff.append("+ " + ln)
+        return f"✏️ {f} (+{add}/−{rem})", "✏️ " + f + "\n" + "\n".join(diff)
+    if tool == "Write":
+        f = _base(inp.get("file_path", "")); c = inp.get("content", "")
+        return f"📝 {f} (nuevo, {c.count(chr(10))+1} líneas)", "📝 " + f + "\n" + c
+    if tool == "Read":
+        return f"📖 {_base(inp.get('file_path',''))}", None
+    if tool == "Bash":
+        cmd = (inp.get("command", "") or "").strip()
+        head = cmd.splitlines()[0] if cmd else ""
+        short = head if len(head) <= 48 else head[:47] + "…"
+        return f"▶️ {short}", "$ " + cmd + "\n" + _resp_text(resp)
+    if tool == "Grep":
+        pat = inp.get("pattern", "")
+        return f'🔍 "{short_pat(pat)}"', "🔍 " + pat + "\n" + _resp_text(resp)
+    if tool == "Glob":
+        return f"📁 {inp.get('pattern','')}", None
+    if tool == "Task":
+        d = inp.get("description") or inp.get("subagent_type") or "subagente"
+        return f"🤖 {d}", "🤖 " + d + "\n" + _resp_text(resp)
+    if tool == "TodoWrite":
+        todos = inp.get("todos") or []
+        done = sum(1 for t in todos if t.get("status") == "completed")
+        return f"☑️ tareas {done}/{len(todos)}", None
+    if tool == "WebFetch":
+        return f"🌐 {inp.get('url','')[:40]}", "🌐 " + inp.get("url", "") + "\n" + _resp_text(resp)
+    if tool == "WebSearch":
+        return f"🌐 buscar: {inp.get('query','')[:36]}", "🌐 " + inp.get("query", "") + "\n" + _resp_text(resp)
+    if tool.startswith("mcp__"):
+        parts = tool.split("__")
+        return f"🔌 {'.'.join(parts[1:])}", None
+    return f"⚙️ {tool}", None
+
+def short_pat(p):
+    p = p or ""
+    return p if len(p) <= 30 else p[:29] + "…"
+
+
+# ---- views ----
+def buttons(expanded):
+    return [[{"text": "🔼 colapsar" if expanded else "📋 detalle",
+             "callback_data": "hnd:activity:collapse" if expanded else "hnd:activity:expand"}]]
+
+def compact_view(trail, start):
+    n = len(trail); secs = int(time.time() - start)
+    lines = [f"🤖 <b>Trabajando…</b> · {n} tools · {secs}s"]
+    for a in trail[-TRAIL_MAX:]:
+        lines.append(esc(a["c"]))
+    return "\n".join(lines)
+
+def detail_view(trail, start):
+    n = len(trail); secs = int(time.time() - start)
+    out = [f"🤖 <b>Detalle</b> · {n} tools · {secs}s"]
+    shown = [a for a in trail if a.get("d")][-4:]  # last 4 with content
+    for a in shown:
+        out.append("<pre>" + esc(_clip(a["d"])) + "</pre>")
+    if not shown:
+        out.append("<i>(sin acciones con contenido aún)</i>")
+    return "\n".join(out)
+
+
+# ---- modes ----
+def mode_tool():
+    ev = json.load(sys.stdin)
+    tool = ev.get("tool_name", "")
+    c, d = render(tool, ev.get("tool_input"), ev.get("tool_response"))
+    entry = {"c": c, "d": d if (d and tool in CONTENT_TOOLS) else None}
+
+    msg = _read("msg").strip()
+    if not msg:  # new turn
+        _write("trail.jsonl", json.dumps(entry) + "\n")
+        _write("start", str(int(time.time())))
+        _write("expanded", "0")
+        start = time.time()
+        mid = send(compact_view(_trail(), start), buttons(False))
+        _write("msg", mid); _write("last_edit", str(time.time()))
+        return
+    # append
+    with open(_p("trail.jsonl"), "a") as f: f.write(json.dumps(entry) + "\n")
+    start = float(_read("start", str(int(time.time()))))
+    now = time.time()
+    if now - float(_read("last_edit", "0") or 0) < THROTTLE:
+        return  # throttled — state is current, next edit will catch up
+    expanded = _read("expanded") == "1"
+    view = detail_view(_trail(), start) if expanded else compact_view(_trail(), start)
+    edit(msg, view, buttons(expanded))
+    _write("last_edit", str(now))
+
+def mode_stop():
+    msg = _read("msg").strip()
+    if not msg: return
+    trail = _trail(); start = float(_read("start", str(int(time.time()))))
+    secs = int(time.time() - start)
+    edit(msg, f"✓ <b>Listo</b> · {len(trail)} tools · {secs}s", [])  # drop the button
+    _write("msg", "")  # next tool starts a fresh turn
+
+def mode_callback(data):
+    msg = _read("msg").strip()
+    cb = os.environ.get("TG_CALLBACK_ID", "")
+    if not msg:
+        answer(cb); return
+    expanded = data.endswith("expand")
+    _write("expanded", "1" if expanded else "0")
+    start = float(_read("start", str(int(time.time()))))
+    view = detail_view(_trail(), start) if expanded else compact_view(_trail(), start)
+    edit(msg, view, buttons(expanded))
+    _write("last_edit", str(time.time()))
+    answer(cb)
+
+
+def main():
+    os.makedirs(STATE, exist_ok=True)
+    mode = sys.argv[1] if len(sys.argv) > 1 else ""
+    if mode == "tool": mode_tool()
+    elif mode == "stop": mode_stop()
+    elif mode == "callback": mode_callback(sys.argv[2] if len(sys.argv) > 2 else os.environ.get("TG_DATA", ""))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:
+        pass  # a hook must never disrupt the turn
+    sys.exit(0)

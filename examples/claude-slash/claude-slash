@@ -151,6 +151,9 @@ run() {
 
 callback() {
   local data="${1:-${TG_DATA:-}}"
+  # The channel routes every hnd: tap to this single handler; delegate the live-activity
+  # feed's taps to its own script (see examples/live-activity).
+  case "$data" in hnd:activity:*) "$(dirname "$0")/activity" callback "$data"; return ;; esac
   local rest="${data#hnd:}" kind val
   kind="${rest%%:*}"; val="${rest##*:}"
   if [ -z "$kind" ] || [ -z "$val" ] || [ "$kind" = "$val" ]; then
