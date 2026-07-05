@@ -73,6 +73,9 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox and the poll cursor live (default `~/.config/tgctl-claude`). |
 | `TGCTL_CHANNEL_ACK_REACTION` | no | Emoji reaction set on receipt (default `👀`; set empty to disable). |
 | `TGCTL_CHANNEL_COMMAND_HANDLER` | no | Executable that handles bot commands locally instead of relaying them (see [Command handlers](#command-handlers)). |
+| `TGCTL_CHANNEL_INJECT_PORT` | no | Enables the local event-injection listener on this port (see [Event injection](#event-injection)). Off when unset. |
+| `TGCTL_CHANNEL_INJECT_SECRET` | with inject | Bearer secret the injection listener requires. Falls back to `TGCTL_CHANNEL_SECRET`; with neither set the listener refuses to start. |
+| `TGCTL_CHANNEL_INJECT_BIND` | no | Injection listener bind address (default `127.0.0.1`; set a Tailscale IP to accept LAN emitters). |
 | `TGCTL_BIN` | no | Path to the `tgctl` binary (default `tgctl`). |
 
 ## Tools exposed to the assistant
@@ -96,6 +99,48 @@ Inbound messages are gated on the **sender's `user_id`** — everything else is 
 - **Groups**: opt in per group, with an optional per-group allowlist and mention requirement (the bot answers only when addressed).
 
 State lives in `access.json` under the state dir. Outbound tools are gated too — the assistant can only send to chats it may receive from.
+
+## Event injection
+
+Local systems (cron jobs, daemons, home automation) can deliver an event into the session as
+a channel turn — the same path an inbound Telegram message takes, without a token-burning
+polling loop inside the session and without a second bot (the Bot API never delivers
+bot-to-bot messages). Disabled unless `TGCTL_CHANNEL_INJECT_PORT` is set; a port without a
+secret fails closed.
+
+```sh
+curl -s -XPOST http://127.0.0.1:8791/inject \
+  -H "Authorization: Bearer $TGCTL_CHANNEL_INJECT_SECRET" \
+  -d '{"source":"CRON","event":"backup_failed","text":"Nightly backup exited 1","context":{"job":"pg-dump"}}'
+```
+
+`text` is required; `source`, `event` and `context` are free-form — the bridge validates
+shape, never semantics. What the session should do with each event belongs in your
+CLAUDE.md, not here.
+
+**Trust boundary**: the bridge always sets `meta.source: "system"` on injected turns and
+namespaces context keys (`ctx_*`), so an event can declare where it came from
+(`injected_by`) but can never impersonate a Telegram sender. Treat injected events as data
+to act on per your own rules, not as authenticated user commands. The listener binds
+`127.0.0.1` by default; point `TGCTL_CHANNEL_INJECT_BIND` at a Tailscale/LAN address only
+if remote emitters need it, and keep the secret out of world-readable files.
+
+Works with cron:
+
+```sh
+0 6 * * * my-check.sh || curl -s -XPOST http://127.0.0.1:8791/inject -H "Authorization: Bearer $SECRET" -d '{"source":"CRON","text":"my-check failed"}'
+```
+
+or Home Assistant (`rest_command`):
+
+```yaml
+rest_command:
+  notify_claude:
+    url: http://100.x.y.z:8791/inject
+    method: POST
+    headers: { Authorization: !secret claude_inject_bearer }
+    payload: '{"source":"HA","event":"{{ event }}","text":"{{ text }}"}'
+```
 
 ## Command handlers
 

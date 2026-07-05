@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-05
+
+### Added
+- Local event-injection listener (`/inject`): authenticated HTTP endpoint that turns local
+  system events (cron, daemons, home automation) into channel turns with `meta.source:
+  "system"` — event-driven notifications with no polling loop in the session. Off by
+  default; enabled via `TGCTL_CHANNEL_INJECT_PORT` + `TGCTL_CHANNEL_INJECT_SECRET`
+  (fail-closed without a secret). Context keys are namespaced (`ctx_*`) so injected events
+  can never impersonate a Telegram sender. (#1)
+
+### Fixed
+- The plugin's `.mcp.json` `env` allowlist was missing `TGCTL_CHANNEL_INJECT_PORT`,
+  `TGCTL_CHANNEL_INJECT_SECRET`, `TGCTL_CHANNEL_INJECT_BIND`, `TGCTL_CHANNEL_COMMAND_HANDLER`
+  and `TGCTL_CHANNEL_TMUX_TARGET` — when loaded as a Claude Code plugin, only env vars
+  listed there reach the channel process, so `/inject`, command handlers, and the
+  tmux-target example never received their config in that mode even when set correctly
+  in the shell.
+- `runInject`'s `http.Server` only set `ReadHeaderTimeout`; added `ReadTimeout`,
+  `WriteTimeout` and `IdleTimeout` so slow or idle clients can't hold the listener open.
+
 ## [0.5.0] — 2026-07-03
 
 ### Added
