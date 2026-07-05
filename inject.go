@@ -45,7 +45,16 @@ func (s *server) runInject() {
 	addr := net.JoinHostPort(s.cfg.InjectBind, s.cfg.InjectPort)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/inject", s.handleInject)
-	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: mux,
+		// Bounds slow/Slowloris clients on a listener that can bind a Tailscale/LAN
+		// address (TGCTL_CHANNEL_INJECT_BIND), not just loopback.
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 	log.Printf("inject: listening on %s", addr)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Printf("inject: listener stopped: %v", err)

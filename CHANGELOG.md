@@ -14,6 +14,16 @@ All notable changes to this project are documented here. The format is based on
   (fail-closed without a secret). Context keys are namespaced (`ctx_*`) so injected events
   can never impersonate a Telegram sender. (#1)
 
+### Fixed
+- The plugin's `.mcp.json` `env` allowlist was missing `TGCTL_CHANNEL_INJECT_PORT`,
+  `TGCTL_CHANNEL_INJECT_SECRET`, `TGCTL_CHANNEL_INJECT_BIND`, `TGCTL_CHANNEL_COMMAND_HANDLER`
+  and `TGCTL_CHANNEL_TMUX_TARGET` — when loaded as a Claude Code plugin, only env vars
+  listed there reach the channel process, so `/inject`, command handlers, and the
+  tmux-target example never received their config in that mode even when set correctly
+  in the shell.
+- `runInject`'s `http.Server` only set `ReadHeaderTimeout`; added `ReadTimeout`,
+  `WriteTimeout` and `IdleTimeout` so slow or idle clients can't hold the listener open.
+
 ## [0.5.0] — 2026-07-03
 
 ### Added

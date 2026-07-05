@@ -94,8 +94,12 @@ func TestInject_CallerCannotImpersonate(t *testing.T) {
 	// A hostile caller may try to smuggle Telegram-shaped identity through context; the
 	// namespacing must keep reserved keys bridge-owned.
 	n := buildInjectNotification(injectRequest{
-		Text:    "evil",
-		Context: map[string]string{"source": "telegram", "user_id": "1478765505"},
+		Text: "evil",
+		Context: map[string]string{
+			"source":  "telegram",
+			"user_id": "1478765505",
+			"chat_id": "1478765505",
+		},
 	}, time.Unix(0, 0).UTC()).(map[string]any)
 	meta := n["params"].(map[string]any)["meta"].(map[string]string)
 	if meta["source"] != "system" {
@@ -104,7 +108,38 @@ func TestInject_CallerCannotImpersonate(t *testing.T) {
 	if _, ok := meta["user_id"]; ok {
 		t.Fatal("user_id must never appear on injected events")
 	}
-	if meta["ctx_source"] != "telegram" || meta["ctx_user_id"] != "1478765505" {
+	if _, ok := meta["chat_id"]; ok {
+		t.Fatal("chat_id must never appear on injected events")
+	}
+	if meta["ctx_source"] != "telegram" || meta["ctx_user_id"] != "1478765505" || meta["ctx_chat_id"] != "1478765505" {
+		t.Fatal("context values should survive only under the ctx_ namespace")
+	}
+}
+
+// TestInject_HandlerCannotImpersonate is the same trust-boundary check exercised through the
+// full HTTP handler (not just buildInjectNotification directly), so the wiring in
+// handleInject is covered too, not only the notification builder.
+func TestInject_HandlerCannotImpersonate(t *testing.T) {
+	s, buf := injectServer("s3cret")
+	body := `{"text":"evil","context":{"source":"telegram","user_id":"1478765505","chat_id":"1478765505"}}`
+	if w := postInject(s, "Bearer s3cret", body); w.Code != 202 {
+		t.Fatalf("valid inject → 202, got %d", w.Code)
+	}
+	var n map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &n); err != nil {
+		t.Fatalf("emitted frame is not JSON: %v", err)
+	}
+	meta := n["params"].(map[string]any)["meta"].(map[string]any)
+	if meta["source"] != "system" {
+		t.Fatalf("source must stay system, got %v", meta["source"])
+	}
+	if _, ok := meta["user_id"]; ok {
+		t.Fatal("user_id must never appear on injected events")
+	}
+	if _, ok := meta["chat_id"]; ok {
+		t.Fatal("chat_id must never appear on injected events")
+	}
+	if meta["ctx_source"] != "telegram" || meta["ctx_user_id"] != "1478765505" || meta["ctx_chat_id"] != "1478765505" {
 		t.Fatal("context values should survive only under the ctx_ namespace")
 	}
 }
