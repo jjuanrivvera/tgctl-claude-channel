@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] — 2026-07-05
+
+### Added
+- Local event-injection listener (`/inject`): authenticated HTTP endpoint that turns local
+  system events (cron, daemons, home automation) into channel turns with `meta.source:
+  "system"` — event-driven notifications with no polling loop in the session. Off by
+  default; enabled via `TGCTL_CHANNEL_INJECT_PORT` + `TGCTL_CHANNEL_INJECT_SECRET`
+  (fail-closed without a secret). Context keys are namespaced (`ctx_*`) so injected events
+  can never impersonate a Telegram sender. (#1)
+
 ## [0.5.0] — 2026-07-03
 
 ### Added

@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-var version = "0.5.0"
+var version = "0.6.0"
 
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
@@ -30,6 +30,9 @@ type Config struct {
 	StateDir       string   // access.json, inbox/, bot.pid, poll cursor live here
 	OffsetFile     string   // getUpdates cursor
 	CommandHandler string   // optional executable that handles recognized bot commands
+	InjectPort     string   // local event-injection listener port; feature off when empty
+	InjectSecret   string   // bearer secret the injection listener requires
+	InjectBind     string   // injection listener bind address (default 127.0.0.1)
 }
 
 func loadConfig() Config {
@@ -41,6 +44,9 @@ func loadConfig() Config {
 		StateDir:       stateDir,
 		OffsetFile:     envOr("TGCTL_CHANNEL_OFFSET_FILE", filepath.Join(stateDir, "poll-offset")),
 		CommandHandler: os.Getenv("TGCTL_CHANNEL_COMMAND_HANDLER"),
+		InjectPort:     os.Getenv("TGCTL_CHANNEL_INJECT_PORT"),
+		InjectSecret:   envOr("TGCTL_CHANNEL_INJECT_SECRET", os.Getenv("TGCTL_CHANNEL_SECRET")),
+		InjectBind:     envOr("TGCTL_CHANNEL_INJECT_BIND", "127.0.0.1"),
 	}
 }
 
@@ -170,6 +176,7 @@ func main() {
 			log.Printf("inbound stopped: %v", err)
 		}
 	}()
+	go srv.runInject()
 
 	// Blocks until Claude Code closes the MCP pipe (stdin EOF). Then clean up so we
 	// don't leave a poller holding the bot token (a 409 for the next session).
