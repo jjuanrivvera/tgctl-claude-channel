@@ -9,7 +9,9 @@ import (
 
 func TestTgctlEnv(t *testing.T) {
 	t.Setenv("TGCTL_TOKEN", "sentinel") // register restore, then clear for the test
-	os.Unsetenv("TGCTL_TOKEN")
+	if err := os.Unsetenv("TGCTL_TOKEN"); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, e := range tgctlEnv("") {
 		if strings.HasPrefix(e, "TGCTL_TOKEN=") {
