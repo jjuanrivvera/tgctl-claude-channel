@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +44,7 @@ func fakeTgctl(t *testing.T, jsonOut string, exitCode int) string {
 
 func TestKeyringAuthStatus(t *testing.T) {
 	valid := fakeTgctl(t, `{"bot":"@x_bot","profile":"acue","valid":true}`, 0)
-	st, err := keyringAuthStatus(t.Context(), Config{TgctlBin: valid})
+	st, err := keyringAuthStatus(context.Background(), Config{TgctlBin: valid})
 	if err != nil {
 		t.Fatalf("valid keyring auth rejected: %v", err)
 	}
@@ -52,12 +53,12 @@ func TestKeyringAuthStatus(t *testing.T) {
 	}
 
 	invalid := fakeTgctl(t, `{"bot":"@x_bot","profile":"acue","valid":false}`, 0)
-	if _, err := keyringAuthStatus(t.Context(), Config{TgctlBin: invalid}); err == nil {
+	if _, err := keyringAuthStatus(context.Background(), Config{TgctlBin: invalid}); err == nil {
 		t.Fatal("invalid stored credentials must be rejected")
 	}
 
 	failing := fakeTgctl(t, `{}`, 1)
-	if _, err := keyringAuthStatus(t.Context(), Config{TgctlBin: failing}); err == nil {
+	if _, err := keyringAuthStatus(context.Background(), Config{TgctlBin: failing}); err == nil {
 		t.Fatal("tgctl failure must surface as an error")
 	}
 }
