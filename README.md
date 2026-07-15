@@ -55,10 +55,15 @@ flowchart LR
    ```jsonc
    { "mcpServers": { "tgctl-claude-channel": { "command": "/path/to/tgctl-claude-channel" } } }
    ```
-4. **Start Claude Code with the channel** (export the config first):
+4. **Start Claude Code with the channel.** If the bot is already logged in to `tgctl`
+   (`tgctl auth login`), the channel authenticates from the OS keyring — nothing to export:
    ```sh
-   export TGCTL_TOKEN=123456789:AA...          # the bot token tgctl uses
+   export TGCTL_BOT=mybot                      # only if the bot isn't tgctl's active profile
    claude --dangerously-load-development-channels server:tgctl-claude-channel
+   ```
+   Without a keyring (CI, containers) pass the token explicitly instead:
+   ```sh
+   export TGCTL_TOKEN=123456789:AA...          # overrides keyring auth
    ```
 5. **Pair.** DM your bot — it replies with a 6-character code. In Claude Code, add yourself to the allowlist with that code, then message the bot again; it reaches the assistant.
 
@@ -68,7 +73,8 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 
 | Var | Required | Meaning |
 |---|---|---|
-| `TGCTL_TOKEN` | yes | Bot token, passed to `tgctl` (never logged). |
+| `TGCTL_TOKEN` | no | Explicit bot token, passed to `tgctl` (never logged). When unset, `tgctl` authenticates from its OS keyring — the active profile, or the one named by `TGCTL_BOT` — and startup fails fast if neither works. |
+| `TGCTL_BOT` | no | Named `tgctl` profile to use for keyring auth (passed through to `tgctl`). Irrelevant when `TGCTL_TOKEN` is set. |
 | `TGCTL_CHANNEL_ALLOW` | no | Comma-separated Telegram `user_id`s to seed the allowlist on first run. |
 | `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox and the poll cursor live (default `~/.config/tgctl-claude`). |
 | `TGCTL_CHANNEL_ACK_REACTION` | no | Emoji reaction set on receipt (default `👀`; set empty to disable). |
