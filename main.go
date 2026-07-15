@@ -94,8 +94,8 @@ type authStatus struct {
 
 // keyringAuthStatus verifies at startup that tgctl can authenticate on its own —
 // otherwise every later send would fail with a confusing per-message error.
-func keyringAuthStatus(cfg Config) (authStatus, error) {
-	out, err := exec.Command(cfg.TgctlBin, "auth", "status", "-o", "json").Output()
+func keyringAuthStatus(ctx context.Context, cfg Config) (authStatus, error) {
+	out, err := exec.CommandContext(ctx, cfg.TgctlBin, "auth", "status", "-o", "json").Output()
 	if err != nil {
 		detail := strings.TrimSpace(stderrOf(err))
 		if detail == "" {
@@ -184,7 +184,9 @@ func main() {
 
 	cfg := loadConfig()
 	if cfg.BotToken == "" {
-		st, err := keyringAuthStatus(cfg)
+		probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		st, err := keyringAuthStatus(probeCtx, cfg)
+		cancel()
 		if err != nil {
 			log.Fatal("TGCTL_TOKEN is not set and tgctl keyring auth is unavailable: ", err)
 		}
