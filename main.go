@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 	"time"
 )
 
-var version = "0.6.0"
+var version = "0.7.0"
 
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
@@ -75,6 +76,43 @@ func envOr(k, def string) string {
 	return def
 }
 
+// tgctlEnv builds the environment for tgctl subprocesses. An explicit token rides as
+// TGCTL_TOKEN; without one the inherited environment is passed through untouched so
+// tgctl resolves credentials from its OS keyring (active profile, or TGCTL_BOT).
+func tgctlEnv(token string) []string {
+	if token == "" {
+		return os.Environ()
+	}
+	return append(os.Environ(), "TGCTL_TOKEN="+token)
+}
+
+type authStatus struct {
+	Bot     string `json:"bot"`
+	Profile string `json:"profile"`
+	Valid   bool   `json:"valid"`
+}
+
+// keyringAuthStatus verifies at startup that tgctl can authenticate on its own —
+// otherwise every later send would fail with a confusing per-message error.
+func keyringAuthStatus(cfg Config) (authStatus, error) {
+	out, err := exec.Command(cfg.TgctlBin, "auth", "status", "-o", "json").Output()
+	if err != nil {
+		detail := strings.TrimSpace(stderrOf(err))
+		if detail == "" {
+			detail = err.Error()
+		}
+		return authStatus{}, fmt.Errorf("tgctl auth status: %s", detail)
+	}
+	var st authStatus
+	if err := json.Unmarshal(out, &st); err != nil {
+		return authStatus{}, fmt.Errorf("parse tgctl auth status: %w", err)
+	}
+	if !st.Valid {
+		return st, fmt.Errorf("stored credentials for %s (profile %q) are invalid", st.Bot, st.Profile)
+	}
+	return st, nil
+}
+
 // --- transport: every Telegram write goes through tgctl -------------------------------
 
 type transport interface {
@@ -94,7 +132,7 @@ type tgctlTransport struct {
 
 func (t tgctlTransport) run(args ...string) (string, error) {
 	cmd := exec.Command(t.bin, args...)
-	cmd.Env = append(os.Environ(), "TGCTL_TOKEN="+t.token)
+	cmd.Env = tgctlEnv(t.token)
 	out, err := cmd.CombinedOutput()
 	s := strings.TrimSpace(string(out))
 	if err != nil {
@@ -146,7 +184,11 @@ func main() {
 
 	cfg := loadConfig()
 	if cfg.BotToken == "" {
-		log.Fatal("TGCTL_TOKEN is required (the bot token tgctl uses)")
+		st, err := keyringAuthStatus(cfg)
+		if err != nil {
+			log.Fatal("TGCTL_TOKEN is not set and tgctl keyring auth is unavailable: ", err)
+		}
+		log.Printf("auth: tgctl keyring (bot %s, profile %s)", st.Bot, st.Profile)
 	}
 	writePID(cfg.StateDir)
 

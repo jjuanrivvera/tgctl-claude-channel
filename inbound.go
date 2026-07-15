@@ -350,7 +350,7 @@ func deleteWebhook(ctx context.Context, cfg Config) {
 
 func tgctlOutput(ctx context.Context, cfg Config, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cfg.TgctlBin, args...)
-	cmd.Env = append(os.Environ(), "TGCTL_TOKEN="+cfg.BotToken)
+	cmd.Env = tgctlEnv(cfg.BotToken)
 	cmd.Stderr = os.Stderr
 	return cmd.Output()
 }
