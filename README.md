@@ -83,6 +83,8 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_CHANNEL_INJECT_PORT` | no | Enables the local event-injection listener on this port (see [Event injection](#event-injection)). Off when unset. |
 | `TGCTL_CHANNEL_INJECT_SECRET` | with inject | Bearer secret the injection listener requires. Falls back to `TGCTL_CHANNEL_SECRET`; with neither set the listener refuses to start. |
 | `TGCTL_CHANNEL_INJECT_BIND` | no | Injection listener bind address (default `127.0.0.1`; set a Tailscale IP to accept LAN emitters). |
+| `TGCTL_CHANNEL_BUSY_NOTICE_DELAY` | no | Grace period after which an unanswered turn earns a one-time "busy / waiting" notice (see [Busy notice](#busy-notice-when-the-session-is-parked)). Accepts a Go duration (`45s`, `2m`) or bare seconds (`45`). **Off by default** (unset/`0`). |
+| `TGCTL_CHANNEL_BUSY_NOTICE_TEXT` | no | Override for the busy-notice text (default is a Spanish "session busy / queued" message). |
 | `TGCTL_BIN` | no | Path to the `tgctl` binary (default `tgctl`). |
 
 ## Tools exposed to the assistant
@@ -148,6 +150,32 @@ rest_command:
     headers: { Authorization: !secret claude_inject_bearer }
     payload: '{"source":"HA","event":"{{ event }}","text":"{{ text }}"}'
 ```
+
+## Busy notice (when the session is parked)
+
+When the Claude Code session is parked on an interactive prompt (an `AskUserQuestion` or a
+modal menu) it stops processing turns. The channel keeps delivering the messages you send,
+but they queue behind the menu — from Telegram it looks like the bot went dead.
+
+The channel process **cannot see the session's TUI state**: it delivers each turn as a
+fire-and-forget `notifications/claude/channel` notification and only learns the session is
+alive when a reply comes back. What it *can* observe is "a turn was delivered and no reply
+arrived within N seconds." Set `TGCTL_CHANNEL_BUSY_NOTICE_DELAY` to that grace period and
+the channel sends **one** heads-up per unanswered turn — cancelled the moment a reply lands:
+
+```sh
+export TGCTL_CHANNEL_BUSY_NOTICE_DELAY=45s   # or a bare number of seconds: 45
+```
+
+It is **off by default** (unset or `0`), debounced to at most one message per in-flight
+turn, and re-arms only on the next turn — so it reduces the "is it stuck?" confusion without
+becoming noise. Because it fires on any turn that goes unanswered past the delay, it also
+covers a genuinely long-running turn ("still working…"), not only a parked prompt — the
+channel can't tell the two apart. Customise the wording with `TGCTL_CHANNEL_BUSY_NOTICE_TEXT`.
+
+> This is the honest minimum. Fully **bridging** the prompt to Telegram (relaying the
+> question and its options as inline buttons, answered remotely) would need a signal from the
+> session side — a hook that fires when a prompt opens — which the channel does not have today.
 
 ## Command handlers
 

@@ -57,6 +57,7 @@ type server struct {
 	out     *out
 	tg      transport
 	typing  *typingManager
+	busy    *busyNotifier
 	store   *accessStore
 	perms   *permissionManager
 	cfg     Config
@@ -210,6 +211,7 @@ func (s *server) callTool(name string, args json.RawMessage) (string, error) {
 			return "", err
 		}
 		s.typing.stop(a.ChatID)
+		s.busy.stop(a.ChatID) // a reply landed — cancel the pending busy notice
 		return s.reply(a.ChatID, a.Text, a.ParseMode, a.ReplyTo, a.Buttons, a.Files)
 
 	case "react":

@@ -6,6 +6,19 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **Busy notice when the session is parked (#5).** When the session is stuck on an
+  interactive prompt (an `AskUserQuestion` / modal menu) it stops processing turns, so
+  Telegram messages queue silently and the bot looks dead. The channel now sends **one**
+  debounced "session busy / waiting — your message is queued" notice per unanswered turn,
+  cancelled the moment a reply lands and re-armed on the next turn. Off by default; enabled
+  by `TGCTL_CHANNEL_BUSY_NOTICE_DELAY` (a Go duration like `45s`, or bare seconds), with the
+  wording overridable via `TGCTL_CHANNEL_BUSY_NOTICE_TEXT`. The channel process cannot see
+  the session's TUI state, so this fires on any turn unanswered past the delay (a parked
+  prompt *or* a genuinely long turn); a full prompt-to-Telegram bridge would need a
+  session-side hook the channel does not have. Added both new vars to the plugin's `.mcp.json`
+  env allowlist so they reach the process in plugin mode.
+
 ### Fixed
 - Two channel instances on one host (different bots/tokens) no longer clobber each
   other's `getUpdates` cursor into an infinite re-delivery loop. The default poll-offset
