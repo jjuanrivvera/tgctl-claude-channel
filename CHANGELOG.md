@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-28
+
 ### Added
 - **Busy notice when the session is parked (#5).** When the session is stuck on an
   interactive prompt (an `AskUserQuestion` / modal menu) it stops processing turns, so
