@@ -200,8 +200,11 @@ func (s *server) handleMessage(m *message) {
 	}
 
 	acc := s.store.read()
-	// Immediate feedback: typing indicator + optional "seen" reaction.
+	// Immediate feedback: typing indicator + optional "seen" reaction. Arm the busy
+	// notice too, so a turn the session never gets to (parked on a prompt) still earns
+	// a heads-up instead of silence.
 	s.typing.start(chatID)
+	s.busy.start(chatID)
 	if ack := acc.ack(); ack != "" && m.MessageID != 0 {
 		go func() { _, _ = s.tg.react(chatID, strconv.FormatInt(m.MessageID, 10), ack) }()
 	}
@@ -237,7 +240,9 @@ func (s *server) handleCallback(cq *callbackQuery) {
 		}
 	}
 	if cq.Message != nil {
-		s.typing.start(strconv.FormatInt(cq.Message.Chat.ID, 10))
+		chatID := strconv.FormatInt(cq.Message.Chat.ID, 10)
+		s.typing.start(chatID)
+		s.busy.start(chatID)
 	}
 	s.out.send(buildCallbackNotification(cq))
 }

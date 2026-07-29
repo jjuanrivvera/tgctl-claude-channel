@@ -25,16 +25,18 @@ var version = "0.7.0"
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
 type Config struct {
-	TgctlBin         string   // path to the tgctl binary
-	BotToken         string   // passed to tgctl as TGCTL_TOKEN; never logged
-	AllowSeed        []string // user_ids to seed access.json's allowlist on first run
-	StateDir         string   // access.json, inbox/, bot.pid, poll cursor live here
-	OffsetFile       string   // getUpdates cursor
-	LegacyOffsetFile string   // pre-per-bot shared cursor to migrate from; "" when OffsetFile was set explicitly
-	CommandHandler   string   // optional executable that handles recognized bot commands
-	InjectPort       string   // local event-injection listener port; feature off when empty
-	InjectSecret     string   // bearer secret the injection listener requires
-	InjectBind       string   // injection listener bind address (default 127.0.0.1)
+	TgctlBin         string        // path to the tgctl binary
+	BotToken         string        // passed to tgctl as TGCTL_TOKEN; never logged
+	AllowSeed        []string      // user_ids to seed access.json's allowlist on first run
+	StateDir         string        // access.json, inbox/, bot.pid, poll cursor live here
+	OffsetFile       string        // getUpdates cursor
+	LegacyOffsetFile string        // pre-per-bot shared cursor to migrate from; "" when OffsetFile was set explicitly
+	CommandHandler   string        // optional executable that handles recognized bot commands
+	InjectPort       string        // local event-injection listener port; feature off when empty
+	InjectSecret     string        // bearer secret the injection listener requires
+	InjectBind       string        // injection listener bind address (default 127.0.0.1)
+	BusyDelay        time.Duration // grace period before a "busy/waiting" notice; 0 disables
+	BusyText         string        // override for the busy-notice text
 }
 
 func loadConfig() Config {
@@ -51,6 +53,8 @@ func loadConfig() Config {
 		InjectPort:       os.Getenv("TGCTL_CHANNEL_INJECT_PORT"),
 		InjectSecret:     envOr("TGCTL_CHANNEL_INJECT_SECRET", os.Getenv("TGCTL_CHANNEL_SECRET")),
 		InjectBind:       envOr("TGCTL_CHANNEL_INJECT_BIND", "127.0.0.1"),
+		BusyDelay:        parseBusyDelay(os.Getenv("TGCTL_CHANNEL_BUSY_NOTICE_DELAY")),
+		BusyText:         os.Getenv("TGCTL_CHANNEL_BUSY_NOTICE_TEXT"),
 	}
 }
 
@@ -238,6 +242,7 @@ func main() {
 		out:     newOut(os.Stdout),
 		tg:      tg,
 		typing:  newTypingManager(tg),
+		busy:    newBusyNotifier(tg, cfg.BusyDelay, cfg.BusyText),
 		store:   newAccessStore(cfg.StateDir, cfg.AllowSeed, ackVal, ackSet),
 		perms:   newPermissionManager(),
 		cfg:     cfg,
