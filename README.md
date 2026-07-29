@@ -77,6 +77,7 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_BOT` | no | Named `tgctl` profile to use for keyring auth (passed through to `tgctl`). Irrelevant when `TGCTL_TOKEN` is set. |
 | `TGCTL_CHANNEL_ALLOW` | no | Comma-separated Telegram `user_id`s to seed the allowlist on first run. |
 | `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox and the poll cursor live (default `~/.config/tgctl-claude`). |
+| `TGCTL_CHANNEL_OFFSET_FILE` | no | Path to the `getUpdates` poll cursor. Defaults to a **per-bot** file `<state-dir>/poll-offset-<bot_id>` (derived from the token prefix), so two instances running different bots on one host never clobber each other's cursor. Set this only to override the location; an existing single-instance `poll-offset` file is migrated into the per-bot path on first run. |
 | `TGCTL_CHANNEL_ACK_REACTION` | no | Emoji reaction set on receipt (default `👀`; set empty to disable). |
 | `TGCTL_CHANNEL_COMMAND_HANDLER` | no | Executable that handles bot commands locally instead of relaying them (see [Command handlers](#command-handlers)). |
 | `TGCTL_CHANNEL_INJECT_PORT` | no | Enables the local event-injection listener on this port (see [Event injection](#event-injection)). Off when unset. |

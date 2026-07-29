@@ -25,29 +25,32 @@ var version = "0.7.0"
 // Config is the channel's runtime configuration, entirely from the environment so the
 // channel stays a thin transport over tgctl.
 type Config struct {
-	TgctlBin       string   // path to the tgctl binary
-	BotToken       string   // passed to tgctl as TGCTL_TOKEN; never logged
-	AllowSeed      []string // user_ids to seed access.json's allowlist on first run
-	StateDir       string   // access.json, inbox/, bot.pid, poll cursor live here
-	OffsetFile     string   // getUpdates cursor
-	CommandHandler string   // optional executable that handles recognized bot commands
-	InjectPort     string   // local event-injection listener port; feature off when empty
-	InjectSecret   string   // bearer secret the injection listener requires
-	InjectBind     string   // injection listener bind address (default 127.0.0.1)
+	TgctlBin         string   // path to the tgctl binary
+	BotToken         string   // passed to tgctl as TGCTL_TOKEN; never logged
+	AllowSeed        []string // user_ids to seed access.json's allowlist on first run
+	StateDir         string   // access.json, inbox/, bot.pid, poll cursor live here
+	OffsetFile       string   // getUpdates cursor
+	LegacyOffsetFile string   // pre-per-bot shared cursor to migrate from; "" when OffsetFile was set explicitly
+	CommandHandler   string   // optional executable that handles recognized bot commands
+	InjectPort       string   // local event-injection listener port; feature off when empty
+	InjectSecret     string   // bearer secret the injection listener requires
+	InjectBind       string   // injection listener bind address (default 127.0.0.1)
 }
 
 func loadConfig() Config {
 	stateDir := envOr("TGCTL_CHANNEL_STATE_DIR", defaultStateDir())
+	offsetFile, legacyOffsetFile := resolveOffsetFile(stateDir, os.Getenv("TGCTL_CHANNEL_OFFSET_FILE"), os.Getenv("TGCTL_TOKEN"))
 	return Config{
-		TgctlBin:       envOr("TGCTL_BIN", "tgctl"),
-		BotToken:       os.Getenv("TGCTL_TOKEN"),
-		AllowSeed:      parseAllowList(os.Getenv("TGCTL_CHANNEL_ALLOW")),
-		StateDir:       stateDir,
-		OffsetFile:     envOr("TGCTL_CHANNEL_OFFSET_FILE", filepath.Join(stateDir, "poll-offset")),
-		CommandHandler: os.Getenv("TGCTL_CHANNEL_COMMAND_HANDLER"),
-		InjectPort:     os.Getenv("TGCTL_CHANNEL_INJECT_PORT"),
-		InjectSecret:   envOr("TGCTL_CHANNEL_INJECT_SECRET", os.Getenv("TGCTL_CHANNEL_SECRET")),
-		InjectBind:     envOr("TGCTL_CHANNEL_INJECT_BIND", "127.0.0.1"),
+		TgctlBin:         envOr("TGCTL_BIN", "tgctl"),
+		BotToken:         os.Getenv("TGCTL_TOKEN"),
+		AllowSeed:        parseAllowList(os.Getenv("TGCTL_CHANNEL_ALLOW")),
+		StateDir:         stateDir,
+		OffsetFile:       offsetFile,
+		LegacyOffsetFile: legacyOffsetFile,
+		CommandHandler:   os.Getenv("TGCTL_CHANNEL_COMMAND_HANDLER"),
+		InjectPort:       os.Getenv("TGCTL_CHANNEL_INJECT_PORT"),
+		InjectSecret:     envOr("TGCTL_CHANNEL_INJECT_SECRET", os.Getenv("TGCTL_CHANNEL_SECRET")),
+		InjectBind:       envOr("TGCTL_CHANNEL_INJECT_BIND", "127.0.0.1"),
 	}
 }
 
@@ -57,6 +60,41 @@ func defaultStateDir() string {
 		return ".tgctl-claude"
 	}
 	return filepath.Join(home, ".config", "tgctl-claude")
+}
+
+// resolveOffsetFile picks the getUpdates cursor path. An explicit
+// TGCTL_CHANNEL_OFFSET_FILE always wins (unchanged for anyone relying on it). Otherwise
+// the default is derived per bot — `poll-offset-<bot_id>` — so two instances polling
+// different bots on one host never share (and clobber) one cursor, which caused the
+// infinite re-delivery loop (#3). The bot id is the numeric prefix of the token
+// (`<botid>:<secret>`), available with no network call. When no token is present
+// (tgctl keyring mode) the id is unknown, so we keep the legacy shared name.
+//
+// It returns the chosen path plus the pre-per-bot path to migrate a cursor from on
+// first run (empty when the caller set the path explicitly or no migration applies).
+func resolveOffsetFile(stateDir, override, token string) (path, legacy string) {
+	if override != "" {
+		return override, ""
+	}
+	shared := filepath.Join(stateDir, "poll-offset")
+	if id := botIDFromToken(token); id != "" {
+		return filepath.Join(stateDir, "poll-offset-"+id), shared
+	}
+	return shared, ""
+}
+
+// botIDFromToken extracts the numeric bot id from a Telegram bot token, whose shape is
+// `<botid>:<secret>`. Returns "" for an empty or malformed token so callers fall back
+// to the legacy shared cursor path.
+func botIDFromToken(token string) string {
+	id, _, ok := strings.Cut(strings.TrimSpace(token), ":")
+	if !ok || id == "" {
+		return ""
+	}
+	if _, err := strconv.ParseInt(id, 10, 64); err != nil {
+		return ""
+	}
+	return id
 }
 
 func parseAllowList(s string) []string {
