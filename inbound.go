@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -86,9 +89,17 @@ type callbackQuery struct {
 // needs no public endpoint (no webhook, no tunnel, immune to edge WAFs). getUpdates
 // and a webhook are mutually exclusive, so we clear any webhook first.
 func (s *server) runInbound(ctx context.Context) error {
+	// Refuse to poll if another live instance already holds this cursor — better a clear
+	// error than two pollers clobbering one offset into the re-delivery loop of #3.
+	unlock, err := lockOffsetFile(s.cfg.OffsetFile)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	deleteWebhook(ctx, s.cfg)
 
-	offset := loadOffset(s.cfg.OffsetFile)
+	offset := migrateOffset(s.cfg)
 	if offset == 0 {
 		offset = latestOffset(ctx, s.cfg)
 		saveOffset(s.cfg.OffsetFile, offset)
@@ -365,6 +376,55 @@ func parseUpdates(out []byte) ([]update, error) {
 		return nil, err
 	}
 	return ups, nil
+}
+
+// migrateOffset returns the starting cursor, seeding a fresh per-bot cursor from the
+// legacy shared poll-offset file on first run so upgrading a single-instance deployment
+// doesn't lose its place and re-deliver a backlog. Migration only applies to the derived
+// default path (LegacyOffsetFile set) and only when the per-bot file doesn't yet exist —
+// an explicit TGCTL_CHANNEL_OFFSET_FILE is never second-guessed.
+func migrateOffset(cfg Config) int64 {
+	if n := loadOffset(cfg.OffsetFile); n != 0 {
+		return n
+	}
+	if cfg.LegacyOffsetFile == "" || cfg.LegacyOffsetFile == cfg.OffsetFile {
+		return 0
+	}
+	if _, err := os.Stat(cfg.OffsetFile); err == nil {
+		return 0 // per-bot cursor already exists (value 0) — respect it, don't migrate
+	}
+	legacy := loadOffset(cfg.LegacyOffsetFile)
+	if legacy != 0 {
+		saveOffset(cfg.OffsetFile, legacy)
+		log.Printf("migrated poll cursor %d from legacy %s to %s", legacy, cfg.LegacyOffsetFile, cfg.OffsetFile)
+	}
+	return legacy
+}
+
+// lockOffsetFile takes an exclusive, non-blocking advisory lock (flock) on the cursor
+// file so two live instances pointed at the same offset file can't both poll and clobber
+// each other's cursor. The returned closer releases the lock; the fd stays open for the
+// process lifetime while polling. An empty path (offset persistence disabled) is a no-op.
+func lockOffsetFile(path string) (func(), error) {
+	if path == "" {
+		return func() {}, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = f.Close()
+		return nil, fmt.Errorf("poll-offset file %s is locked by another running channel instance: %w — "+
+			"stop the other process or give this one its own TGCTL_CHANNEL_OFFSET_FILE / TGCTL_CHANNEL_STATE_DIR", path, err)
+	}
+	return func() {
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
+	}, nil
 }
 
 func loadOffset(path string) int64 {

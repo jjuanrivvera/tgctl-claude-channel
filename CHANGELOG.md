@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Two channel instances on one host (different bots/tokens) no longer clobber each
+  other's `getUpdates` cursor into an infinite re-delivery loop. The default poll-offset
+  file is now derived per bot — `poll-offset-<bot_id>`, where `<bot_id>` is the numeric
+  prefix of the token (`<botid>:<secret>`, resolved with no network call) — so multiple
+  instances are safe by default. An explicit `TGCTL_CHANNEL_OFFSET_FILE` still takes
+  precedence, and an existing single-instance `poll-offset` cursor is migrated into the
+  new per-bot file on first run so no backlog is re-delivered. As defense in depth the
+  poller now takes an exclusive `flock` on its cursor file and refuses to start (with a
+  clear error) if another live instance already holds it. In tgctl-keyring mode (no
+  `TGCTL_TOKEN`) the bot id is unknown, so the legacy shared name is kept. (#3)
+
 ## [0.6.0] — 2026-07-05
 
 ### Added
