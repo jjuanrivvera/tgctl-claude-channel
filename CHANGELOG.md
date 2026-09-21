@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Security
+- **Second layer of bot-token redaction (jjuanrivvera/tgctl#21).** The Bot API carries its
+  credential in the URL path, so a transport-level failure (a dropped connection, a read
+  timeout) made Go print the token inside `*url.Error` — and tgctl's stderr, which this
+  channel captures verbatim, became the text of an MCP tool result stored in the agent's
+  transcript. tgctl now redacts at the source; the channel redacts again at its own edge,
+  so an old binary on the host or a future code path cannot leak it either:
+  - every JSON-RPC frame is scrubbed as it is serialized in `out.send` — the single choke
+    point every tool result, protocol error and channel notification passes through;
+  - the process log goes through a redacting writer, so a token in an error we merely log
+    never lands on the host;
+  - the non-secret bot id is kept (`123456789:<redacted>`), so a redacted error still says
+    which bot failed and why.
+
 ## [0.8.0] - 2026-07-28
 
 ### Added
