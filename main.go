@@ -223,8 +223,10 @@ func (e *toolError) Error() string {
 func main() {
 	log.SetPrefix("tgctl-claude-channel: ")
 	log.SetFlags(0)
+	log.SetOutput(redactingWriter{os.Stderr})
 
 	cfg := loadConfig()
+	setLiveToken(cfg.BotToken)
 	if cfg.BotToken == "" {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		st, err := keyringAuthStatus(probeCtx, cfg)

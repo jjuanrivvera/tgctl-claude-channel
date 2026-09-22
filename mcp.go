@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,18 +28,39 @@ type inMsg struct {
 func (m inMsg) isNotification() bool { return len(m.ID) == 0 || string(m.ID) == "null" }
 
 // out serializes writes to stdout. The inbound pump and the request handler both emit
-// frames, so a single mutex-guarded encoder keeps them from interleaving.
+// frames, so a single mutex-guarded writer keeps them from interleaving.
 type out struct {
-	mu  sync.Mutex
-	enc *json.Encoder
+	mu     sync.Mutex
+	w      io.Writer
+	broken bool // a frame was left half-written; everything after it would be unparseable
 }
 
-func newOut(w io.Writer) *out { return &out{enc: json.NewEncoder(w)} }
+func newOut(w io.Writer) *out { return &out{w: w} }
 
+// send writes one JSON-RPC frame. Every frame the server emits — tool results, protocol
+// errors and channel notifications alike — passes through here, which makes it the one place
+// worth scrubbing: a bot token that reached a tool result would be written verbatim into the
+// agent's transcript (jjuanrivvera/tgctl#21). Redacting the serialized frame rather than the
+// value keeps this a single choke point no future tool can route around; a token needs no
+// JSON escaping, so it always appears literally in the bytes.
 func (o *out) send(v any) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	_ = o.enc.Encode(v)
+	if o.broken {
+		return
+	}
+	// A failed write can still have put part of the frame on stdout, and io.Writer promises
+	// an error whenever it wrote less than it was given. Appending the next frame to half a
+	// line would hand the client something it cannot parse, so the stream stops here and says
+	// so once — by then stdout is almost always a closed pipe and the session is ending.
+	if n, err := o.w.Write(append([]byte(redactSecrets(string(b))), '\n')); err != nil {
+		o.broken = true
+		log.Printf("stdout write failed after %d bytes, no further frames will be sent: %v", n, err)
+	}
 }
 
 func result(id json.RawMessage, res any) map[string]any {
