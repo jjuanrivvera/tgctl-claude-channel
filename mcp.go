@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,8 +30,9 @@ func (m inMsg) isNotification() bool { return len(m.ID) == 0 || string(m.ID) == 
 // out serializes writes to stdout. The inbound pump and the request handler both emit
 // frames, so a single mutex-guarded writer keeps them from interleaving.
 type out struct {
-	mu sync.Mutex
-	w  io.Writer
+	mu     sync.Mutex
+	w      io.Writer
+	broken bool // a frame was left half-written; everything after it would be unparseable
 }
 
 func newOut(w io.Writer) *out { return &out{w: w} }
@@ -48,7 +50,17 @@ func (o *out) send(v any) {
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	_, _ = o.w.Write(append([]byte(redactSecrets(string(b))), '\n'))
+	if o.broken {
+		return
+	}
+	// A failed write can still have put part of the frame on stdout, and io.Writer promises
+	// an error whenever it wrote less than it was given. Appending the next frame to half a
+	// line would hand the client something it cannot parse, so the stream stops here and says
+	// so once — by then stdout is almost always a closed pipe and the session is ending.
+	if n, err := o.w.Write(append([]byte(redactSecrets(string(b))), '\n')); err != nil {
+		o.broken = true
+		log.Printf("stdout write failed after %d bytes, no further frames will be sent: %v", n, err)
+	}
 }
 
 func result(id json.RawMessage, res any) map[string]any {

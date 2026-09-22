@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
+	"os"
 	"strings"
 	"testing"
 )
@@ -182,5 +184,29 @@ func TestRedactingWriter_ScrubsTheLog(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "123456789:<redacted>") {
 		t.Errorf("expected the redacted bot id, got %s", buf.String())
+	}
+}
+
+// failingWriter reports a short write with an error, the way a closed stdout pipe does.
+type failingWriter struct{ calls int }
+
+func (f *failingWriter) Write(p []byte) (int, error) {
+	f.calls++
+	return 3, errors.New("write |1: broken pipe")
+}
+
+// out.send is the one place frames are written, so a half-written frame has to end the
+// stream: appending the next one would hand the client a line it cannot parse.
+func TestSend_StopsAfterAFailedWrite(t *testing.T) {
+	log.SetOutput(io.Discard)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	fw := &failingWriter{}
+	o := newOut(fw)
+	o.send(result(json.RawMessage(`1`), map[string]any{"ok": true}))
+	o.send(result(json.RawMessage(`2`), map[string]any{"ok": true}))
+
+	if fw.calls != 1 {
+		t.Errorf("expected the stream to stop after the failed write, got %d writes", fw.calls)
 	}
 }
