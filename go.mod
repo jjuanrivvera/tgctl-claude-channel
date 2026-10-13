@@ -1,3 +1,3 @@
 module github.com/jjuanrivvera/tgctl-claude-channel
 
-go 1.22
+go 1.26.9
