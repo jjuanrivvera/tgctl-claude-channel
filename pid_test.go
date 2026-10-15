@@ -207,16 +207,39 @@ func TestProcessBotID(t *testing.T) {
 }
 
 func TestPIDIdentity(t *testing.T) {
-	for _, tc := range []struct{ token, keyringBot, want string }{
+	for _, tc := range []struct{ token, keyringBotID, want string }{
 		{"111:secret", "", "111"},
-		{"111:secret", "@other_bot", "111"}, // a token always wins over the keyring
-		{"", "@jjuanrivvera_bot", "kr-jjuanrivvera_bot"},
-		{"", "hub", "kr-hub"},
-		{"", "../../etc", "kr-etc"}, // never a path component
+		{"111:secret", "222", "111"}, // a token always wins over the keyring
+		{"", "8673889070", "8673889070"},
+		{"", "@jjuanrivvera_bot", ""}, // a display name is never an identity
+		{"", "../../etc", ""},
 		{"", "", ""},
 	} {
-		if got := pidIdentity(tc.token, tc.keyringBot); got != tc.want {
-			t.Errorf("pidIdentity(%q, %q) = %q, want %q", tc.token, tc.keyringBot, got, tc.want)
+		if got := pidIdentity(tc.token, tc.keyringBotID); got != tc.want {
+			t.Errorf("pidIdentity(%q, %q) = %q, want %q", tc.token, tc.keyringBotID, got, tc.want)
 		}
+	}
+}
+
+func TestWritePIDLogsLiveUnsignalablePoller(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(resolvePIDFile(dir, "111"), []byte("424242"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buf strings.Builder
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	terminated := false
+	writePIDWith(dir, "111", func(_ int, sig os.Signal) error {
+		if sig == syscall.SIGTERM {
+			terminated = true
+		}
+		return syscall.EPERM
+	}, func(int) string { return "" })
+	if terminated {
+		t.Fatal("must not try to terminate a poller it cannot probe")
+	}
+	if !strings.Contains(buf.String(), "pid=424242") || !strings.Contains(buf.String(), "cannot be replaced") {
+		t.Fatalf("EPERM poller not reported, log=%q", buf.String())
 	}
 }

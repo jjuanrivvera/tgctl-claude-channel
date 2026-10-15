@@ -87,9 +87,9 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_CHANNEL_BUSY_NOTICE_TEXT` | no | Override for the busy-notice text (default is a Spanish "session busy / queued" message). |
 | `TGCTL_BIN` | no | Path to the `tgctl` binary (default `tgctl`). |
 
-Each instance keeps its PID in `bot-<id>.pid` in the state directory and replaces only
+Each instance keeps its PID in `bot-<bot_id>.pid` in the state directory and replaces only
 an earlier poller for the same bot: `<id>` is the numeric bot id when `TGCTL_TOKEN` is
-set, or `kr-<bot>` from `tgctl auth status` in keyring mode. A legacy `bot.pid` is
+set, or the `bot_id` from `tgctl auth status` in keyring mode. A legacy `bot.pid` is
 replaced only if the process environment confirms the same bot (requires readable
 Linux `/proc`); otherwise it is never signaled. Keyring instances still share the
 default poll cursor, so give concurrent keyring instances separate state directories.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,24 +20,18 @@ func resolvePIDFile(stateDir, id string) string {
 	return filepath.Join(stateDir, "bot.pid")
 }
 
-// pidIdentity names the bot this instance polls. A token gives its numeric id; keyring
-// auth (no token in the environment) gives the bot `tgctl auth status` reported, so the
-// Hub — which runs on the keyring — still replaces a duplicate of itself instead of
-// losing the one-consumer guarantee.
-func pidIdentity(token, keyringBot string) string {
+// pidIdentity names the bot this instance polls: the numeric id from the token, or under
+// keyring auth (no token in the environment) the bot_id `tgctl auth status` reported. The
+// Hub runs on the keyring, so without this it would lose the one-consumer guarantee. The
+// display name is not used: it is not unique, and the id keeps both modes on one file name.
+func pidIdentity(token, keyringBotID string) string {
 	if id := botIDFromToken(token); id != "" {
 		return id
 	}
-	var b strings.Builder
-	for _, r := range strings.TrimPrefix(keyringBot, "@") {
-		if r == '_' || r == '-' || (r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
-			b.WriteRune(r)
-		}
+	if _, err := strconv.ParseUint(keyringBotID, 10, 64); err != nil {
+		return "" // never let an unexpected value become a path component
 	}
-	if b.Len() == 0 {
-		return ""
-	}
-	return "kr-" + b.String()
+	return keyringBotID
 }
 
 // Only another consumer of the same bot can cause a getUpdates 409. A shared state
@@ -69,7 +64,12 @@ func writePIDWith(stateDir, id string, signalProcess func(int, os.Signal) error,
 				continue
 			}
 			seen[previous] = true
-			if signalProcess(previous, syscall.Signal(0)) != nil {
+			if err := signalProcess(previous, syscall.Signal(0)); err != nil {
+				// EPERM means it is alive but owned by someone else: it still holds
+				// getUpdates, and the operator needs to hear that rather than a 409 later.
+				if !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrProcessDone) {
+					log.Printf("poller pid=%d for bot=%s is alive but cannot be replaced: %v", previous, id, err)
+				}
 				continue
 			}
 			log.Printf("replacing poller pid=%d for bot=%s: same bot starting, only one getUpdates consumer is allowed", previous, id)

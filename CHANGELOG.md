@@ -8,7 +8,7 @@ All notable changes to this project are documented here. The format is based on
 
 ### Fixed
 - Channel instances sharing a state directory now use a per-bot `bot-<id>.pid` (the
-  bot id from the token, or `kr-<bot>` under keyring auth), so starting one bot can no
+  bot id from the token, or the `bot_id` from `tgctl auth status` under keyring auth), so starting one bot can no
   longer terminate another bot's live session (#8, part 1). Legacy `bot.pid` pollers
   are replaced only when their process environment confirms the same bot.
 - Shutdown logs now explain signals, parent changes, stdin EOF, and stdin read errors;

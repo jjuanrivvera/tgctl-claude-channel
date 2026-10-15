@@ -132,6 +132,7 @@ func tgctlEnv(token string) []string {
 
 type authStatus struct {
 	Bot     string `json:"bot"`
+	BotID   string `json:"bot_id"`
 	Profile string `json:"profile"`
 	Valid   bool   `json:"valid"`
 }
@@ -233,7 +234,7 @@ func main() {
 
 	cfg := loadConfig()
 	setLiveToken(cfg.BotToken)
-	keyringBot := ""
+	keyringBotID := ""
 	if cfg.BotToken == "" {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		st, err := keyringAuthStatus(probeCtx, cfg)
@@ -242,9 +243,9 @@ func main() {
 			log.Fatal("TGCTL_TOKEN is not set and tgctl keyring auth is unavailable: ", err)
 		}
 		log.Printf("auth: tgctl keyring (bot %s, profile %s)", st.Bot, st.Profile)
-		keyringBot = st.Bot
+		keyringBotID = st.BotID
 	}
-	cfg.PIDIdentity = pidIdentity(cfg.BotToken, keyringBot)
+	cfg.PIDIdentity = pidIdentity(cfg.BotToken, keyringBotID)
 	writePID(cfg.StateDir, cfg.PIDIdentity)
 
 	tg := tgctlTransport{bin: cfg.TgctlBin, token: cfg.BotToken}
