@@ -87,12 +87,12 @@ type server struct {
 	cmdHook *commandHook
 }
 
-func (s *server) serve(r io.Reader) {
+func (s *server) serve(r io.Reader) error {
 	dec := json.NewDecoder(r)
 	for {
 		var m inMsg
 		if err := dec.Decode(&m); err != nil {
-			return // EOF / client disconnected
+			return err
 		}
 		s.dispatch(m)
 	}

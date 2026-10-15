@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -28,7 +29,8 @@ type Config struct {
 	TgctlBin         string        // path to the tgctl binary
 	BotToken         string        // passed to tgctl as TGCTL_TOKEN; never logged
 	AllowSeed        []string      // user_ids to seed access.json's allowlist on first run
-	StateDir         string        // access.json, inbox/, bot.pid, poll cursor live here
+	StateDir         string        // access.json, inbox/, PID files, poll cursor live here
+	PIDIdentity      string        // bot this instance polls; keys its PID file (see pidIdentity)
 	OffsetFile       string        // getUpdates cursor
 	LegacyOffsetFile string        // pre-per-bot shared cursor to migrate from; "" when OffsetFile was set explicitly
 	CommandHandler   string        // optional executable that handles recognized bot commands
@@ -221,12 +223,17 @@ func (e *toolError) Error() string {
 // --- lifecycle ------------------------------------------------------------------------
 
 func main() {
+	if handled, code := handleArgs(os.Args[1:], os.Stdout, os.Stderr); handled {
+		os.Exit(code)
+	}
+
 	log.SetPrefix("tgctl-claude-channel: ")
 	log.SetFlags(0)
 	log.SetOutput(redactingWriter{os.Stderr})
 
 	cfg := loadConfig()
 	setLiveToken(cfg.BotToken)
+	keyringBot := ""
 	if cfg.BotToken == "" {
 		probeCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		st, err := keyringAuthStatus(probeCtx, cfg)
@@ -235,8 +242,10 @@ func main() {
 			log.Fatal("TGCTL_TOKEN is not set and tgctl keyring auth is unavailable: ", err)
 		}
 		log.Printf("auth: tgctl keyring (bot %s, profile %s)", st.Bot, st.Profile)
+		keyringBot = st.Bot
 	}
-	writePID(cfg.StateDir)
+	cfg.PIDIdentity = pidIdentity(cfg.BotToken, keyringBot)
+	writePID(cfg.StateDir, cfg.PIDIdentity)
 
 	tg := tgctlTransport{bin: cfg.TgctlBin, token: cfg.BotToken}
 	ackVal, ackSet := os.LookupEnv("TGCTL_CHANNEL_ACK_REACTION")
@@ -269,33 +278,44 @@ func main() {
 
 	// Blocks until Claude Code closes the MCP pipe (stdin EOF). Then clean up so we
 	// don't leave a poller holding the bot token (a 409 for the next session).
-	srv.serve(os.Stdin)
-	shutdown(cfg, cancel)
+	reason := "stdin EOF from Claude Code"
+	if err := srv.serve(os.Stdin); err != io.EOF {
+		reason = fmt.Sprintf("stdin read error from Claude Code: %v", err)
+	}
+	shutdown(cfg, cancel, reason)
 }
 
-// writePID records our PID and replaces a stale poller from a crashed session — only
-// one getUpdates consumer per token is allowed, else every new session sees 409.
-func writePID(stateDir string) {
-	_ = os.MkdirAll(stateDir, 0o700)
-	pidFile := filepath.Join(stateDir, "bot.pid")
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if stale, e := strconv.Atoi(strings.TrimSpace(string(b))); e == nil && stale > 1 && stale != os.Getpid() {
-			if proc, e := os.FindProcess(stale); e == nil && proc.Signal(syscall.Signal(0)) == nil {
-				log.Printf("replacing stale poller pid=%d", stale)
-				_ = proc.Signal(syscall.SIGTERM)
-				time.Sleep(500 * time.Millisecond)
-			}
+const usage = "Usage: tgctl-claude-channel [--version|-v|version|--help|-h]\n\nWith no arguments, start the Claude Code channel over MCP stdio.\n"
+
+func handleArgs(args []string, stdout, stderr io.Writer) (handled bool, code int) {
+	if len(args) == 0 {
+		return false, 0
+	}
+	if len(args) == 1 {
+		switch args[0] {
+		case "--version", "-v", "version":
+			_, _ = fmt.Fprintln(stdout, "tgctl-claude-channel", version)
+			return true, 0
+		case "--help", "-h":
+			_, _ = io.WriteString(stdout, usage)
+			return true, 0
 		}
 	}
-	_ = os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600)
+	_, _ = io.WriteString(stderr, usage)
+	return true, 2
 }
 
 func installShutdown(cfg Config, cancel context.CancelFunc) {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	names := map[os.Signal]string{
+		syscall.SIGTERM: "SIGTERM",
+		syscall.SIGINT:  "SIGINT",
+		syscall.SIGHUP:  "SIGHUP",
+	}
 	go func() {
-		<-sig
-		shutdown(cfg, cancel)
+		received := <-sig
+		shutdown(cfg, cancel, "signal received: "+names[received])
 	}()
 }
 
@@ -306,8 +326,8 @@ func watchdog(cfg Config, cancel context.CancelFunc) {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	for range t.C {
-		if os.Getppid() != boot {
-			shutdown(cfg, cancel)
+		if parent := os.Getppid(); parent != boot {
+			shutdown(cfg, cancel, fmt.Sprintf("orphaned: parent changed ppid=%d→%d", boot, parent))
 			return
 		}
 	}
@@ -315,19 +335,15 @@ func watchdog(cfg Config, cancel context.CancelFunc) {
 
 var shutdownOnce = make(chan struct{}, 1)
 
-func shutdown(cfg Config, cancel context.CancelFunc) {
+func shutdown(cfg Config, cancel context.CancelFunc, reason string) {
 	select {
 	case shutdownOnce <- struct{}{}:
 	default:
 		return // already shutting down
 	}
+	log.Printf("shutting down: %s", reason)
 	cancel() // cancels the poll context → kills the in-flight tgctl subprocess
-	pidFile := filepath.Join(cfg.StateDir, "bot.pid")
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if p, e := strconv.Atoi(strings.TrimSpace(string(b))); e == nil && p == os.Getpid() {
-			_ = os.Remove(pidFile)
-		}
-	}
+	removePID(cfg.StateDir, cfg.PIDIdentity)
 	// Give the cancelled subprocess a moment to die, then exit.
 	go func() { time.Sleep(time.Second); os.Exit(0) }()
 	os.Exit(0)

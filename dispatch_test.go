@@ -78,8 +78,8 @@ func TestHandleMessage_PhotoDelivered(t *testing.T) {
 
 func TestWritePID(t *testing.T) {
 	dir := t.TempDir()
-	writePID(dir)
-	b, err := os.ReadFile(filepath.Join(dir, "bot.pid"))
+	writePID(dir, "123")
+	b, err := os.ReadFile(filepath.Join(dir, "bot-123.pid"))
 	if err != nil || strings.TrimSpace(string(b)) != strconv.Itoa(os.Getpid()) {
 		t.Fatalf("writePID should record our pid; got %q err=%v", b, err)
 	}
