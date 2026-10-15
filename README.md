@@ -76,7 +76,7 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_TOKEN` | no | Explicit bot token, passed to `tgctl` (never logged). When unset, `tgctl` authenticates from its OS keyring — the active profile, or the one named by `TGCTL_BOT` — and startup fails fast if neither works. |
 | `TGCTL_BOT` | no | Named `tgctl` profile to use for keyring auth (passed through to `tgctl`). Irrelevant when `TGCTL_TOKEN` is set. |
 | `TGCTL_CHANNEL_ALLOW` | no | Comma-separated Telegram `user_id`s to seed the allowlist on first run. |
-| `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox and the poll cursor live (default `~/.config/tgctl-claude`). |
+| `TGCTL_CHANNEL_STATE_DIR` | no | Where `access.json`, the inbox, PID files and the poll cursor live (default `~/.config/tgctl-claude`). |
 | `TGCTL_CHANNEL_OFFSET_FILE` | no | Path to the `getUpdates` poll cursor. Defaults to a **per-bot** file `<state-dir>/poll-offset-<bot_id>` (derived from the token prefix), so two instances running different bots on one host never clobber each other's cursor. Set this only to override the location; an existing single-instance `poll-offset` file is migrated into the per-bot path on first run. |
 | `TGCTL_CHANNEL_ACK_REACTION` | no | Emoji reaction set on receipt (default `👀`; set empty to disable). |
 | `TGCTL_CHANNEL_COMMAND_HANDLER` | no | Executable that handles bot commands locally instead of relaying them (see [Command handlers](#command-handlers)). |
@@ -86,6 +86,16 @@ For an always-on VPS deployment (systemd, headless launch), see [`deploy/DEPLOY.
 | `TGCTL_CHANNEL_BUSY_NOTICE_DELAY` | no | Grace period after which an unanswered turn earns a one-time "busy / waiting" notice (see [Busy notice](#busy-notice-when-the-session-is-parked)). Accepts a Go duration (`45s`, `2m`) or bare seconds (`45`). **Off by default** (unset/`0`). |
 | `TGCTL_CHANNEL_BUSY_NOTICE_TEXT` | no | Override for the busy-notice text (default is a Spanish "session busy / queued" message). |
 | `TGCTL_BIN` | no | Path to the `tgctl` binary (default `tgctl`). |
+
+Each instance keeps its PID in `bot-<bot_id>.pid` in the state directory and replaces only
+an earlier poller for the same bot: `<id>` is the numeric bot id when `TGCTL_TOKEN` is
+set, or the `bot_id` from `tgctl auth status` in keyring mode. A legacy `bot.pid` is
+replaced only if the process environment confirms the same bot (requires readable
+Linux `/proc`); otherwise it is never signaled. Keyring instances still share the
+default poll cursor, so give concurrent keyring instances separate state directories.
+
+`tgctl-claude-channel --version` (`-v` or `version`) and `--help` (`-h`) print and exit
+without starting the channel or touching its state files.
 
 ## Tools exposed to the assistant
 

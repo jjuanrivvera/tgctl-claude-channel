@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Channel instances sharing a state directory now use a per-bot `bot-<id>.pid` (the
+  bot id from the token, or the `bot_id` from `tgctl auth status` under keyring auth), so starting one bot can no
+  longer terminate another bot's live session (#8, part 1). Legacy `bot.pid` pollers
+  are replaced only when their process environment confirms the same bot.
+- Shutdown logs now explain signals, parent changes, stdin EOF, and stdin read errors;
+  poller replacement logs identify the PID and the same-bot conflict.
+- `--version`, `-v`, `version`, `--help`, and `-h` exit without starting the channel or
+  touching state. Unexpected arguments print usage to stderr and exit with status 2.
+
 ### Security
 - **Second layer of bot-token redaction (jjuanrivvera/tgctl#21).** The Bot API carries its
   credential in the URL path, so a transport-level failure (a dropped connection, a read
